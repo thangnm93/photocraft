@@ -3190,3 +3190,14 @@ fn effect_cache_keeps_no_pixels_of_a_dropped_layer() {
     assert_eq!(std::sync::Arc::strong_count(&own), 1);
     assert_eq!(std::sync::Arc::strong_count(&child), 1);
 }
+
+#[test]
+fn an_effect_cache_hit_makes_the_entry_the_newest() {
+    // Eviction takes the oldest first: maps used by every render (layers a render server never
+    // changes) must outlive maps of layers that changed and will not be asked for again.
+    let mut order: std::collections::VecDeque<u64> = [1, 2, 3].into_iter().collect();
+    touch_effect_entry(&mut order, 1);
+    assert_eq!(order.iter().copied().collect::<Vec<_>>(), [2, 3, 1]);
+    touch_effect_entry(&mut order, 1);
+    assert_eq!(order.iter().copied().collect::<Vec<_>>(), [2, 3, 1]);
+}

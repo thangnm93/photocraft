@@ -22,3 +22,7 @@
   file is decoded. UI labels for the two prefs in all catalogs; scorecard regenerated.
 - 2026-10-16: Gate: 8915 workspace tests, panic_hunt, clippy, fmt, layers, scorecard, wasm green;
   `xtask test-corpus --changed`: 160 suites, 3691 passed, 0 failed.
+- 2026-10-16: Replace Contents `fit: "contain"`: the new file is scaled to fit inside the old
+  contents' box, keeping its aspect ratio, centred (the rest of the box empty) — what renderers that
+  letterbox a design expect. Same placement as stretch when the aspects match. Engine + serve method
+  + control-protocol doc; 4 tests. Gate: engine/automation 2039 tests, panic_hunt, clippy, fmt green.

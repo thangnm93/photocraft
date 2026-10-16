@@ -139,7 +139,8 @@ impl Headless {
     /// Replace the contents of smart object `layer` (all its instances) from a file: the
     /// capability-scoped counterpart of `layer.smartObjects.replaceContents`, which reads an
     /// ambient path. `path` resolves beneath the read root as in [`Headless::place`]; `fit`
-    /// (`"keep"` or `"stretch"`) and `clipToCanvas` are the command's own options. One undo step.
+    /// (`"keep"`, `"stretch"` or `"contain"`) and `clipToCanvas` are the command's own options. One
+    /// undo step.
     pub fn replace_contents(&mut self, index: Option<usize>, path: &str, params: &Value) -> Result<Value, AutomationError> {
         let layer =
             params.get("layer").and_then(Value::as_u64).ok_or_else(|| AutomationError::BadRequest("doc.replaceContents needs a numeric `layer`".into()))?;
@@ -147,7 +148,8 @@ impl Headless {
             None => photocraft_engine::smart_cmds::Fit::Keep,
             Some("keep") => photocraft_engine::smart_cmds::Fit::Keep,
             Some("stretch") => photocraft_engine::smart_cmds::Fit::Stretch,
-            Some(other) => return Err(AutomationError::BadRequest(format!("`fit` must be \"keep\" or \"stretch\", not {other:?}"))),
+            Some("contain") => photocraft_engine::smart_cmds::Fit::Contain,
+            Some(other) => return Err(AutomationError::BadRequest(format!("`fit` must be \"keep\", \"stretch\" or \"contain\", not {other:?}"))),
         };
         let clip = match params.get("clipToCanvas") {
             None | Some(Value::Null) => false,

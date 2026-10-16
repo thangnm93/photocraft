@@ -1041,10 +1041,12 @@ fn set_shared_source(s: &mut Session, id: LayerId, label: &str, keep_psd: bool, 
 }
 
 /// Stretching new contents over the old: the new source's box, and each instance's old box (see
-/// [`authored_boxes`]).
+/// [`authored_boxes`]). With `contain`, the new box is first grown to each old box's aspect
+/// around its centre (see [`contain_box`]), so the new contents keep theirs.
 struct Stretch {
     to: [f64; 4],
     from: Vec<(LayerId, [f64; 4])>,
+    contain: bool,
 }
 
 /// [`set_shared_source`]; with `stretch`, re-aiming every instance's placement so the new
@@ -1060,7 +1062,8 @@ fn set_shared_source_fit(s: &mut Session, id: LayerId, label: &str, keep_psd: bo
         for &instance in &changed {
             if let Some(st) = &stretch {
                 let old_box = st.from.iter().find(|(l, _)| *l == instance).map(|(_, b)| *b).ok_or(EngineError::NoLayer(instance))?;
-                stretch_placement(smart_mut(doc, instance)?, old_box, st.to);
+                let to = if st.contain { contain_box(old_box, st.to) } else { st.to };
+                stretch_placement(smart_mut(doc, instance)?, old_box, to);
             }
             smart_mut(doc, instance)?.source = new.clone();
             if !keep_psd {
@@ -1108,6 +1111,9 @@ pub enum Fit {
     Keep,
     /// The new file fills the old contents' box, whatever its size (what mockup templates expect).
     Stretch,
+    /// The new file is scaled to fit inside the old contents' box, keeping its aspect ratio, and
+    /// centred in it; the rest of the box stays empty.
+    Contain,
 }
 
 fn fit_param(p: &Value) -> Result<Fit> {
@@ -1115,7 +1121,8 @@ fn fit_param(p: &Value) -> Result<Fit> {
         None | Some(Value::Null) => Ok(Fit::Keep),
         Some(Value::String(f)) if f == "keep" => Ok(Fit::Keep),
         Some(Value::String(f)) if f == "stretch" => Ok(Fit::Stretch),
-        Some(o) => Err(other(format!("`fit` must be \"keep\" or \"stretch\", not {o}"))),
+        Some(Value::String(f)) if f == "contain" => Ok(Fit::Contain),
+        Some(o) => Err(other(format!("`fit` must be \"keep\", \"stretch\" or \"contain\", not {o}"))),
     }
 }
 
@@ -1143,12 +1150,13 @@ pub fn replace_contents_with(s: &mut Session, id: LayerId, file_name: &str, byte
     // The old boxes first: without a stored size they decode the old contents, which must not
     // push the new file out of a small source cache.
     let from = match fit {
-        Fit::Stretch => Some(authored_boxes(doc, id)?),
+        Fit::Stretch | Fit::Contain => Some(authored_boxes(doc, id)?),
         Fit::Keep => None,
     };
     let bytes = Arc::new(bytes);
     let b = source_image_keyed(file_name, &bytes, (content_hash(&bytes), fmt))?.bounds;
-    let stretch = from.map(|from| Stretch { to: [f64::from(b.x0), f64::from(b.y0), f64::from(b.x1), f64::from(b.y1)], from });
+    let contain = fit == Fit::Contain;
+    let stretch = from.map(|from| Stretch { to: [f64::from(b.x0), f64::from(b.y0), f64::from(b.x1), f64::from(b.y1)], from, contain });
     set_shared_source_fit(s, id, "Replace Contents", false, SmartSource::Embedded { file_name: file_name.to_string(), bytes }, stretch, clip_to_canvas)
 }
 
@@ -1196,6 +1204,20 @@ fn authored_boxes(doc: &Document, id: LayerId) -> Result<Vec<(LayerId, [f64; 4])
             Ok((l, b.ok_or_else(|| other("the smart object's contents are unavailable, so their box is unknown"))?))
         })
         .collect()
+}
+
+/// The box around `new`'s centre with `old`'s aspect ratio that just holds `new`: stretching it
+/// onto `old` scales `new` uniformly to fit inside `old`, centred. Degenerate boxes are returned
+/// as they are ([`stretch_placement`] leaves those placements alone).
+fn contain_box(old: [f64; 4], new: [f64; 4]) -> [f64; 4] {
+    let (ow, oh, nw, nh) = (old[2] - old[0], old[3] - old[1], new[2] - new[0], new[3] - new[1]);
+    if !(ow > 0.0 && oh > 0.0 && nw > 0.0 && nh > 0.0) || [ow, oh, nw, nh].iter().any(|v| !v.is_finite()) {
+        return new;
+    }
+    let k = (ow / nw).min(oh / nh);
+    let (w, h) = (ow / k, oh / k);
+    let (cx, cy) = ((new[0] + new[2]) / 2.0, (new[1] + new[3]) / 2.0);
+    [cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0]
 }
 
 /// Re-aims `sm`'s placement so that the box `new` (source pixels of new contents) lands where
@@ -1605,7 +1627,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "layer.smartObjects.replaceContents",
             "Replace Contents…",
             SO,
-            r##"{"layer":id?,"path":str,"fit":"keep|stretch"="keep","clipToCanvas":bool=false}"##,
+            r##"{"layer":id?,"path":str,"fit":"keep|stretch|contain"="keep","clipToCanvas":bool=false}"##,
             has_smart,
             replace_contents
         ),

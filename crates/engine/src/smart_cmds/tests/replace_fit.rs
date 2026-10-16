@@ -1,5 +1,6 @@
 //! Replace Contents with `fit: "stretch"`: a file of another size fills the old contents' box,
-//! through the same transform, warp or perspective, as a file of the old size would.
+//! through the same transform, warp or perspective, as a file of the old size would; with
+//! `fit: "contain"` it is scaled to fit inside that box, keeping its aspect, and centred.
 
 use super::*;
 use photocraft_geom::warp::{BezierMesh, Warp};
@@ -167,6 +168,49 @@ fn stretch_with_a_same_size_file_changes_no_placement() {
     let b = old_box(&s, id);
     let before = active_smart(&s);
     replace(&mut s, id, &png_file(&dir, "same.png", (b[2] - b[0]) as u32, (b[3] - b[1]) as u32, [0.0, 1.0, 0.0]), Some("stretch"));
+    assert_eq!(active_smart(&s).transform, before.transform);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn contain_fits_the_file_inside_the_old_box_keeping_its_aspect() {
+    // A square file into the 46 × 33 box: scaled to 33 × 33 and centred across the width, the
+    // rest of the box left empty.
+    let dir = tmp_dir("contain");
+    let (mut s, id) = smart_session();
+    let before = rendered(&s, id).content_bounds();
+    let b = old_box(&s, id);
+    let (bw, bh) = (b[2] - b[0], b[3] - b[1]);
+    replace(&mut s, id, &png_file(&dir, "square.png", 10, 10, [0.0, 1.0, 0.0]), Some("contain"));
+    let k = (bw / 10.0).min(bh / 10.0);
+    let (px, py) = (((bw - 10.0 * k) / 2.0).round() as i32, ((bh - 10.0 * k) / 2.0).round() as i32);
+    let want = Rect::new(before.x0 + px, before.y0 + py, before.x1 - px, before.y1 - py);
+    let got = rendered(&s, id).content_bounds();
+    assert!(near(got, want, 1), "{got:?} vs {want:?}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn contain_with_the_boxs_own_aspect_places_the_file_like_stretch() {
+    let dir = tmp_dir("contain-aspect");
+    let (mut stretched, id) = smart_session();
+    let b = old_box(&stretched, id);
+    let (w, h) = (2 * (b[2] - b[0]) as u32, 2 * (b[3] - b[1]) as u32);
+    replace(&mut stretched, id, &png_file(&dir, "a.png", w, h, [1.0, 0.0, 0.0]), Some("stretch"));
+    let (mut contained, id2) = smart_session();
+    replace(&mut contained, id2, &png_file(&dir, "b.png", w, h, [1.0, 0.0, 0.0]), Some("contain"));
+    assert_eq!(active_smart(&contained).transform, active_smart(&stretched).transform);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn contain_is_one_undo_step() {
+    let dir = tmp_dir("contain-undo");
+    let (mut s, id) = smart_session();
+    let before = active_smart(&s);
+    replace(&mut s, id, &png_file(&dir, "small.png", 5, 7, [0.0, 1.0, 0.0]), Some("contain"));
+    assert_ne!(active_smart(&s).transform, before.transform, "the placement was re-aimed");
+    s.execute("edit.undo", json!({})).unwrap();
     assert_eq!(active_smart(&s).transform, before.transform);
     std::fs::remove_dir_all(&dir).ok();
 }

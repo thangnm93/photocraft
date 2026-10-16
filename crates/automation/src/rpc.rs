@@ -722,6 +722,14 @@ mod tests {
         // One undo step restores the old contents.
         h.handle("engine.execute", json!({"command": "edit.undo"})).unwrap();
         assert_eq!(bounds(&mut h, layer), placed);
+        // `fit: "contain"` fits a 2 × 6 file inside the 8 × 6 placement: same size, centred
+        // (bounds are x, y, width, height).
+        std::fs::write(root.join("tall.png"), png(2, 6, 7)).unwrap();
+        h.handle("doc.replaceContents", json!({"layer": layer, "path": "tall.png", "fit": "contain"})).unwrap();
+        let p = |i: usize| placed[i].as_i64().unwrap();
+        assert_eq!(bounds(&mut h, layer), json!([p(0) + 3, p(1), 2, 6]));
+        h.handle("engine.execute", json!({"command": "edit.undo"})).unwrap();
+        assert_eq!(bounds(&mut h, layer), placed);
         // Without `fit` the file keeps its pixel size.
         h.handle("doc.replaceContents", json!({"layer": layer, "path": "design.png"})).unwrap();
         let kept = bounds(&mut h, layer);

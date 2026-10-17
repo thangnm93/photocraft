@@ -518,8 +518,10 @@ pub fn apply_smart_filters(placed: &Surface, sm: &SmartObject, canvas: Rect) -> 
     let mut cur = placed.clone();
     // Edge pixels repeat at the canvas ∪ placed-content edge, as for layer filters.
     let extent = canvas.union(&placed.content_bounds());
+    // Without the document only the stored source size is known.
+    let quad = || placement_quad(sm, || None);
     for f in sm.smart_filters.iter().filter(|f| f.visible) {
-        cur = apply_smart_filter(f, &cur, canvas, extent)?;
+        cur = apply_smart_filter(f, &cur, canvas, extent, &quad)?;
     }
     Ok(match sm.filter_mask.as_ref().filter(|m| m.enabled) {
         Some(m) => photocraft_compose::filter_mask::mix(placed, &cur, m),
@@ -527,15 +529,36 @@ pub fn apply_smart_filters(placed: &Surface, sm: &SmartObject, canvas: Rect) -> 
     })
 }
 
+/// Where the smart object's placement puts the corners PSD's `Trnf` stores (see
+/// [`photocraft_io::smart_map::placement_quad`]), for the source size the placement is for: the
+/// size the PSD stored while the layer still has its PSD placed-layer data (the source is then
+/// the one it describes), else `source_size()`.
+fn placement_quad(sm: &SmartObject, source_size: impl FnOnce() -> Option<(f64, f64)>) -> Option<crate::distort_cmds::Quad> {
+    let stored = sm.psd_raw.as_deref().and_then(|d| photocraft_io::smart_map::parse_sold(d)).and_then(|p| photocraft_io::smart_map::stored_size(&p.descriptor));
+    let size = stored.or_else(source_size)?;
+    let q = photocraft_io::smart_map::placement_quad(sm.transform, sm.perspective, size, sm.warp.as_ref());
+    q.iter().flatten().all(|v| v.is_finite()).then_some(q)
+}
+
 /// One visible smart filter over `cur`, blended with its blend mode and opacity. `Err` when the
 /// requesting session's authority denies the filter's params: callers surface the error instead of
-/// rendering (and caching) unfiltered pixels.
-fn apply_smart_filter(f: &SmartFilter, cur: &Surface, canvas: Rect, extent: Rect) -> Result<Surface> {
-    let out = match crate::filters::apply_filter_to_surface(&f.command, &f.params, cur, canvas, None, extent)? {
-        // Unknown ids (e.g. Photoshop filters we don't implement) leave the pixels alone.
-        Some(out) => out,
-        None => cur.clone(),
+/// rendering (and caching) unfiltered pixels. `placement` gives the smart object's corners, which
+/// a Photoshop Puppet Warp's mesh follows (asked only when one runs).
+fn apply_smart_filter(
+    f: &SmartFilter,
+    cur: &Surface,
+    canvas: Rect,
+    extent: Rect,
+    placement: &dyn Fn() -> Option<crate::distort_cmds::Quad>,
+) -> Result<Surface> {
+    let out = if f.command == crate::distort_cmds::PSD_PUPPET {
+        crate::jobs::authorize_render_command(&f.command, &f.params)?;
+        crate::distort_cmds::psd_puppet_surface(&f.params, cur, placement())
+    } else {
+        crate::filters::apply_filter_to_surface(&f.command, &f.params, cur, canvas, None, extent)?
     };
+    // Unknown ids (e.g. Photoshop filters we don't implement) leave the pixels alone.
+    let out = out.unwrap_or_else(|| cur.clone());
     if f.blend == BlendMode::Normal && f.opacity >= 1.0 { Ok(out) } else { Ok(blend_surfaces(cur, &out, f.blend, f.opacity.clamp(0.0, 1.0))) }
 }
 
@@ -646,10 +669,13 @@ fn render_opt(doc: &Document, sm: &SmartObject, ctx: &JobCtx, clip: Option<Rect>
         None => (0, placed()?),
     };
     let n = filters.len() as f32;
+    // The source's own size when the PSD's stored one no longer applies (decoded once, cached).
+    let quad = std::cell::OnceCell::new();
+    let placement = || *quad.get_or_init(|| placement_quad(sm, || source_box(doc, sm).map(|b| (b[2] - b[0], b[3] - b[1]))));
     for (i, (f, key)) in filters.iter().zip(&keys).enumerate().skip(done) {
         ctx.check()?;
         ctx.progress(i as f32 / n, "");
-        cur = Stage { surface: apply_smart_filter(f, &cur.surface, canvas, cur.extent)?, extent: cur.extent };
+        cur = Stage { surface: apply_smart_filter(f, &cur.surface, canvas, cur.extent, &placement)?, extent: cur.extent };
         stack_cache::put(*key, &cur);
     }
     ctx.progress(1.0, "");
@@ -1441,6 +1467,12 @@ fn set_filter_params(s: &mut Session, p: &Value) -> Result<Value> {
         let f = &mut sm.smart_filters[i];
         if f.command == photocraft_io::smart_map::UNSUPPORTED_FILTER {
             return Err(bad(CMD, "this smart filter isn't implemented in PhotoCraft: it is kept as is (it can be hidden, moved or deleted)"));
+        }
+        if f.command == crate::distort_cmds::PSD_PUPPET {
+            return Err(bad(
+                CMD,
+                "this Puppet Warp was made in Photoshop: it is drawn from the mesh Photoshop stored and kept as is (it can be hidden, re-blended, moved or deleted)",
+            ));
         }
         match (&mut f.params, new) {
             (Value::Object(old), Value::Object(n)) => old.extend(n),

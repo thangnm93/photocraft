@@ -20,7 +20,9 @@
 //! listed, can be hidden, reordered or deleted, and is written back unchanged.
 //!
 //! Camera Raw and Displace keep their whole item as a template next to the editable settings
-//! (Displace's carries the embedded displacement map, see `displace_map.rs`).
+//! (Displace's carries the embedded displacement map, see `displace_map.rs`). Puppet Warp keeps
+//! its item verbatim and renders from the mesh Photoshop solved and stored in it
+//! (`puppet_map.rs`).
 
 use photocraft_color::{BlendMode, ColorMode, PixelFormat, SampleType};
 use photocraft_doc::{LayerMask, SmartFilter};
@@ -39,8 +41,11 @@ use crate::blocks::{enum_of, get_desc, num};
 mod camera_raw;
 #[path = "displace_map.rs"]
 mod displace;
+#[path = "puppet_map.rs"]
+mod puppet;
 
 pub use displace::embedded_map as displace_embedded_map;
+pub use puppet::{COMMAND as PUPPET_WARP, StoredPuppet, stored_mesh as puppet_mesh};
 
 /// Command id of a Photoshop smart filter PhotoCraft does not implement. Its params hold the
 /// filter's name, Photoshop filter id and descriptor (`psd`, hex); it renders as a pass-through.
@@ -456,12 +461,17 @@ fn from_hex(s: &str) -> Option<Vec<u8>> {
     b.as_chunks::<2>().0.iter().map(|c| Some(d(c[0])? << 4 | d(c[1])?)).collect()
 }
 
-/// One `filterFXList` item → [`SmartFilter`] (an [`UNSUPPORTED_FILTER`] when not modelled).
-pub fn filter_from_item(item: &Descriptor) -> SmartFilter {
+/// A `filterFXList` item's blend mode, opacity (0–1) and visibility (`enab`).
+fn item_blending(item: &Descriptor) -> (BlendMode, f32, bool) {
     let opts = get_desc(item, "blendOptions");
     let opacity = opts.and_then(|o| px(o, "Opct")).map_or(1.0, |v| (v / 100.0).clamp(0.0, 1.0) as f32);
     let blend = opts.and_then(|o| enum_of(o, "Md  ")).and_then(crate::effects_map::blend_from_id).unwrap_or(BlendMode::Normal);
-    let visible = bool_or(item, "enab", true);
+    (blend, opacity, bool_or(item, "enab", true))
+}
+
+/// One `filterFXList` item → [`SmartFilter`] (an [`UNSUPPORTED_FILTER`] when not modelled).
+pub fn filter_from_item(item: &Descriptor) -> SmartFilter {
+    let (blend, opacity, visible) = item_blending(item);
     let fltr = get_desc(item, "Fltr");
     let class = fltr.map(|f| String::from_utf8_lossy(f.class_id.as_bytes()).into_owned());
     let filter_id = int(item, "filterID").unwrap_or(0);
@@ -469,6 +479,7 @@ pub fn filter_from_item(item: &Descriptor) -> SmartFilter {
     let known = match class.as_deref() {
         Some(camera_raw::CLASS) => camera_raw::import_params(item).map(|p| (camera_raw::COMMAND, p)),
         Some(displace::CLASS) => displace::import_params(item).map(|p| (displace::COMMAND, p)),
+        Some(puppet::CLASS) => puppet::import_params(item).map(|p| (puppet::COMMAND, p)),
         Some(GALLERY_CLASS) => fltr.and_then(|f| gallery_params(item, f)).map(|p| (GALLERY_COMMAND, p)),
         c => c.and_then(|c| known_params(c, fltr)),
     };
@@ -624,6 +635,9 @@ pub fn item_for_filter(f: &SmartFilter) -> Result<Descriptor, String> {
     if f.command == GALLERY_COMMAND {
         return gallery_item(f);
     }
+    if f.command == puppet::COMMAND {
+        return puppet::export_item(f);
+    }
     if f.command == UNSUPPORTED_FILTER {
         let raw = f.params.get("psd").and_then(J::as_str).and_then(from_hex).ok_or("its filter data is missing")?;
         let mut d = Descriptor::from_bytes(&raw).map_err(|e| format!("its filter data is unreadable ({e})"))?;
@@ -706,6 +720,15 @@ fn quad_points(s: &PlacedSpec<'_>) -> [f64; 8] {
         (out[2 * i], out[2 * i + 1]) = map(x, y);
     }
     out
+}
+
+/// Where a placement puts the corners `Trnf` stores (top-left, top-right, bottom-right,
+/// bottom-left; see [`quad_points`]): a `size` source through `transform` (or `perspective`)
+/// and `warp`, as PSD export writes them.
+pub fn placement_quad(transform: Affine, perspective: Option<[f64; 9]>, size: (f64, f64), warp: Option<&Warp>) -> [[f64; 2]; 4] {
+    let q = quad_points(&PlacedSpec { idnt: "", placed: "", transform, perspective, size, dpi: 72.0, warp, filter_fx: None });
+    let [x0, y0, x1, y1, x2, y2, x3, y3] = q;
+    [[x0, y0], [x1, y1], [x2, y2], [x3, y3]]
 }
 
 /// The transform quad: the source corners (top-left, top-right, bottom-right, bottom-left).

@@ -19,6 +19,15 @@ pub struct PlacedSpec<'a> {
     pub filter_fx: Option<Descriptor>,
 }
 
+/// Where a placement puts the corners `Trnf` stores (top-left, top-right, bottom-right,
+/// bottom-left; see [`quad_points`]): a `size` source through `transform` (or `perspective`)
+/// and `warp`, as PSD export writes them.
+pub fn placement_quad(transform: Affine, perspective: Option<[f64; 9]>, size: (f64, f64), warp: Option<&Warp>) -> [[f64; 2]; 4] {
+    let spec = PlacedSpec { idnt: "", placed: "", transform, perspective, size, dpi: 72.0, warp, filter_fx: None };
+    let [x0, y0, x1, y1, x2, y2, x3, y3] = quad_points(&spec, warp);
+    [[x0, y0], [x1, y1], [x2, y2], [x3, y3]]
+}
+
 /// Where the frame corners land (top-left, top-right, bottom-right, bottom-left), as x, y pairs.
 /// The frame is [`crate::blocks::placed_frame`] of `warp`, the warp the block stores, for an
 /// affine placement (the inverse of `parse_smart`), [`crate::blocks::perspective_frame`] of it

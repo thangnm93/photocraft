@@ -9,13 +9,17 @@
 //! smart object and re-applied to a fresh render of the source, so editing never accumulates
 //! resampling. The params are the data in every case (strokes, pins and planes are small
 //! compared with a field or a mesh, and replay is deterministic), so nothing needs a blob.
+//!
+//! A Puppet Warp made in Photoshop arrives from PSD as a [`PSD_PUPPET`] smart filter instead:
+//! Photoshop's own solve isn't ours, so it is drawn from the deformed mesh Photoshop stored
+//! ([`psd_puppet_surface`]) rather than re-solved from its pins.
 
 use std::cell::RefCell;
 
 use photocraft_algo::liquify::{LiquifyField, LiquifyStroke, apply_liquify, auto_cell};
 use photocraft_algo::perspective::{PerspectiveMap, Plane, Straighten, straighten};
 use photocraft_algo::puppet::{PuppetDensity, PuppetMode, PuppetPin, PuppetWarp, puppet_warp, puppet_warp_with_mask};
-use photocraft_algo::transform::Interp;
+use photocraft_algo::transform::{Homography, Interp};
 use photocraft_algo::warp::{warp_mesh_gray, warp_mesh_surface};
 use photocraft_color::PixelFormat;
 use photocraft_doc::{Document, Layer, LayerContent, LayerId, Locks, SmartFilter};
@@ -32,6 +36,9 @@ pub const PUPPET: &str = "edit.puppetWarp";
 pub const PUPPET_SMART: &str = "layer.smartObjects.puppetWarp";
 pub const PERSPECTIVE: &str = "edit.perspectiveWarp";
 pub const PERSPECTIVE_SMART: &str = "layer.smartObjects.perspectiveWarp";
+/// A Puppet Warp smart filter from a Photoshop PSD (not a command: it can be hidden, re-blended,
+/// moved or deleted, not edited).
+pub use photocraft_io::smart_map::PUPPET_WARP as PSD_PUPPET;
 
 fn bad(cmd: &str, msg: impl Into<String>) -> EngineError {
     EngineError::BadParams { cmd: cmd.into(), msg: msg.into() }
@@ -173,8 +180,33 @@ pub fn perspective_surface(surf: &Surface, planes: &[Plane], interp: Interp) -> 
     warp_mesh_surface(surf, b, &|x, y| m.map(x, y), interp)
 }
 
+/// Corners of a placement, as `Trnf` stores them: top-left, top-right, bottom-right, bottom-left.
+pub type Quad = [[f64; 2]; 4];
+
+/// Draws a Photoshop Puppet Warp ([`PSD_PUPPET`] params) on `surf`, the placed smart object:
+/// each triangle of the stored mesh is mapped onto its deformed triangle, and only the mesh area
+/// shows. The mesh was made for the placement corners Photoshop stored with it; when `placement`
+/// (the corners now) differs, the mesh follows the map from those corners to these. `None` when
+/// the stored data doesn't decode or the warp would cover too much: the filter then leaves the
+/// pixels alone, like one PhotoCraft doesn't implement.
+pub fn psd_puppet_surface(params: &Value, surf: &Surface, placement: Option<Quad>) -> Option<Surface> {
+    let stored = photocraft_io::smart_map::puppet_mesh(params)?;
+    let mut mesh = stored.mesh;
+    if let (Some(from), Some(to)) = (stored.quad, placement) {
+        let tol = 1e-6 * (1.0 + from.iter().chain(&to).flatten().fold(0.0f64, |m, v| m.max(v.abs())));
+        if from.iter().flatten().zip(to.iter().flatten()).any(|(a, b)| (a - b).abs() > tol) {
+            let unit = [0.0, 0.0, 1.0, 1.0];
+            let h = Homography::rect_to_quad(unit, to)?.mul(&Homography::rect_to_quad(unit, from)?.inverse()?);
+            mesh.map(|x, y| h.apply(x, y));
+        }
+    }
+    // Bilinear: closer to Photoshop's own renders than bicubic (measured on its mockup files).
+    photocraft_algo::solved_mesh::warp_solved(surf, &mesh, Interp::Bilinear)
+}
+
 /// Smart-filter hook: re-applies a stored Liquify / Puppet / Perspective Warp to a rendered
-/// smart object (`None` for other ids).
+/// smart object (`None` for other ids). A Photoshop Puppet Warp drawn here has no placement to
+/// follow (see [`psd_puppet_surface`]).
 pub fn apply_to_surface(id: &str, params: &Value, surf: &Surface, canvas: Rect) -> Option<Surface> {
     match id {
         LIQUIFY => {
@@ -184,6 +216,7 @@ pub fn apply_to_surface(id: &str, params: &Value, surf: &Surface, canvas: Rect) 
         // A stored warp too far to render leaves the smart object as it is (#1019).
         PUPPET | PUPPET_SMART => Some(puppet_surface(surf, &puppet_params(id, params).ok()?, interp(params)).unwrap_or_else(|| surf.clone())),
         PERSPECTIVE | PERSPECTIVE_SMART => Some(perspective_surface(surf, &perspective_params(id, params).ok()?, interp(params))),
+        PSD_PUPPET => Some(psd_puppet_surface(params, surf, None).unwrap_or_else(|| surf.clone())),
         _ => None,
     }
 }

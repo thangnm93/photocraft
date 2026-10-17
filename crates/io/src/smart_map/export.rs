@@ -7,7 +7,7 @@ use super::import::{
 use super::placed::enumv;
 use super::{
     Class, Descriptor, FilterStack, Id, J, ReferenceItem, SmartFilter, UNSUPPORTED_FILTER, UnicodeString, Value, camera_raw, displace, hue_sat,
-    perspective_warp,
+    perspective_warp, puppet,
 };
 
 // ---------- writing ----------
@@ -288,6 +288,9 @@ fn fltr_for(k: &Known, p: &J) -> Result<Option<Descriptor>, String> {
 
 /// The `filterFXList` item for one smart filter, or why it can't be written.
 pub fn item_for_filter(f: &SmartFilter) -> Result<Descriptor, String> {
+    if f.command == puppet::COMMAND {
+        return puppet::export_item(f);
+    }
     if f.command == camera_raw::COMMAND {
         let mut d = camera_raw::export_item(&f.params)?;
         set(&mut d, "blendOptions", blend_options(f));

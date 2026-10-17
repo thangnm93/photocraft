@@ -2,7 +2,7 @@ use super::export::{CELL_SIZE, blend_options, is_meta, pi, rgbc, whole};
 use super::placed::enumv;
 use super::{
     BlendMode, Descriptor, Id, J, Map, ReferenceItem, SmartFilter, UNSUPPORTED_FILTER, UnicodeString, Value, bool_or, camera_raw, displace, enum_of, get_desc,
-    hue_sat, json, num, perspective_warp, text_of,
+    hue_sat, json, num, perspective_warp, puppet, text_of,
 };
 
 // ---------- the filters we model ----------
@@ -852,12 +852,17 @@ pub(crate) fn from_hex(s: &str) -> Option<Vec<u8>> {
     b.as_chunks::<2>().0.iter().map(|c| Some(d(c[0])? << 4 | d(c[1])?)).collect()
 }
 
-/// One `filterFXList` item → [`SmartFilter`] (an [`UNSUPPORTED_FILTER`] when not modelled).
-pub fn filter_from_item(item: &Descriptor) -> SmartFilter {
+/// A `filterFXList` item's blend mode, opacity (0–1) and visibility (`enab`).
+pub(crate) fn item_blending(item: &Descriptor) -> (BlendMode, f32, bool) {
     let opts = get_desc(item, "blendOptions");
     let opacity = opts.and_then(|o| px(o, "Opct")).map_or(1.0, |v| (v / 100.0).clamp(0.0, 1.0) as f32);
     let blend = opts.and_then(|o| enum_of(o, "Md  ")).and_then(crate::effects_map::blend_from_id).unwrap_or(BlendMode::Normal);
-    let visible = bool_or(item, "enab", true);
+    (blend, opacity, bool_or(item, "enab", true))
+}
+
+/// One `filterFXList` item → [`SmartFilter`] (an [`UNSUPPORTED_FILTER`] when not modelled).
+pub fn filter_from_item(item: &Descriptor) -> SmartFilter {
+    let (blend, opacity, visible) = item_blending(item);
     let fltr = get_desc(item, "Fltr");
     let class = fltr.map(|f| String::from_utf8_lossy(f.class_id.as_bytes()).into_owned());
     let filter_id = int(item, "filterID").unwrap_or(0);
@@ -867,6 +872,7 @@ pub fn filter_from_item(item: &Descriptor) -> SmartFilter {
         Some(displace::CLASS) => displace::import_params(item).map(|p| (displace::COMMAND, p)),
         Some(hue_sat::CLASS) => fltr.and_then(hue_sat::import_params).map(|p| (hue_sat::COMMAND, p)),
         Some(perspective_warp::CLASS) => perspective_warp::import_params(item).map(|p| (perspective_warp::COMMAND, p)),
+        Some(puppet::CLASS) => puppet::import_params(item).map(|p| (puppet::COMMAND, p)),
         Some(GALLERY_CLASS) => fltr.and_then(|f| gallery_params(item, f)).map(|p| (GALLERY_COMMAND, p)),
         Some(c @ ("Fbrs" | "Clds" | "DfrC")) => fltr.and_then(|f| coloured_params(c, item, f)),
         // A `Fltr` that is there but not a descriptor is settings we can't read: kept verbatim

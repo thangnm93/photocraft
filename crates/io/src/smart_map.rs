@@ -49,8 +49,11 @@ mod displace;
 mod hue_sat;
 #[path = "perspective_warp_map.rs"]
 mod perspective_warp;
+#[path = "puppet_map.rs"]
+mod puppet;
 
 pub use displace::{embed_map as displace_embed_map, embedded_map as displace_embedded_map, without_map as displace_without_map};
+pub use puppet::{COMMAND as PUPPET_WARP, StoredPuppet, stored_mesh as puppet_mesh};
 
 mod export;
 mod import;
@@ -61,9 +64,9 @@ pub use export::{filter_fx, item_for_filter};
 pub use import::filter_from_item;
 #[cfg(test)]
 use import::{GALLERY_EFFECTS, LENSES, MEZZOTINT_TYPES, adjustment_list, known_params};
-use import::{code, from_hex, int, to_hex};
+use import::{code, from_hex, int, item_blending, to_hex};
 use placed::enumv;
-pub use placed::{PlacedSpec, plld_bytes, sold_bytes, stored_size};
+pub use placed::{PlacedSpec, placement_quad, plld_bytes, sold_bytes, stored_size};
 #[cfg(test)]
 use placed::{quad_moved, warp_desc};
 

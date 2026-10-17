@@ -134,8 +134,10 @@ pub fn apply_smart_filters(placed: &Surface, sm: &SmartObject, canvas: Rect) -> 
     let mut cur = placed.clone();
     // Edge pixels repeat at the canvas ∪ placed-content edge, as for layer filters.
     let extent = canvas.union(&placed.content_bounds());
+    // Without the document only the stored source size is known.
+    let quad = || placement_quad(sm, || None);
     for f in sm.smart_filters.iter().filter(|f| f.visible) {
-        cur = apply_smart_filter(f, &cur, filter_bounds(f, placed, canvas), extent, &JobCtx::new())?;
+        cur = apply_smart_filter(f, &cur, filter_bounds(f, placed, canvas), extent, &JobCtx::new(), &quad)?;
     }
     Ok(match sm.filter_mask.as_ref().filter(|m| m.enabled) {
         Some(m) => photocraft_compose::filter_mask::mix(placed, &cur, m),
@@ -158,15 +160,37 @@ fn renders_in_object(f: &SmartFilter) -> bool {
     matches!(f.command.as_str(), "filter.render.clouds" | "filter.render.differenceClouds" | "filter.render.fibers" | "filter.render.lensFlare")
 }
 
+/// Where the smart object's placement puts the corners PSD's `Trnf` stores (see
+/// [`photocraft_io::smart_map::placement_quad`]), for the source size the placement is for: the
+/// size the PSD stored while the layer still has its PSD placed-layer data (the source is then
+/// the one it describes), else `source_size()`.
+fn placement_quad(sm: &SmartObject, source_size: impl FnOnce() -> Option<(f64, f64)>) -> Option<crate::distort_cmds::Quad> {
+    let stored = sm.psd_raw.as_deref().and_then(|d| photocraft_io::smart_map::parse_sold(d)).and_then(|p| photocraft_io::smart_map::stored_size(&p.descriptor));
+    let size = stored.or_else(source_size)?;
+    let q = photocraft_io::smart_map::placement_quad(sm.transform, sm.perspective, size, sm.warp.as_ref());
+    q.iter().flatten().all(|v| v.is_finite()).then_some(q)
+}
+
 /// One visible smart filter over `cur`, blended with its blend mode and opacity. `Err` when the
 /// requesting session's authority denies the filter's params: callers surface the error instead of
-/// rendering (and caching) unfiltered pixels.
-fn apply_smart_filter(f: &SmartFilter, cur: &Surface, canvas: Rect, extent: Rect, ctx: &JobCtx) -> Result<Surface> {
-    let out = match crate::filters::apply_filter_to_surface_in(&f.command, &f.params, cur, canvas, None, extent, ctx)? {
-        // Unknown ids (e.g. Photoshop filters we don't implement) leave the pixels alone.
-        Some(out) => out,
-        None => cur.clone(),
+/// rendering (and caching) unfiltered pixels. `placement` gives the smart object's corners, which
+/// a Photoshop Puppet Warp's mesh follows (asked only when one runs).
+fn apply_smart_filter(
+    f: &SmartFilter,
+    cur: &Surface,
+    canvas: Rect,
+    extent: Rect,
+    ctx: &JobCtx,
+    placement: &dyn Fn() -> Option<crate::distort_cmds::Quad>,
+) -> Result<Surface> {
+    let out = if f.command == crate::distort_cmds::PSD_PUPPET {
+        crate::jobs::authorize_render_command(&f.command, &f.params)?;
+        crate::distort_cmds::psd_puppet_surface(&f.params, cur, placement())
+    } else {
+        crate::filters::apply_filter_to_surface_in(&f.command, &f.params, cur, canvas, None, extent, ctx)?
     };
+    // Unknown ids (e.g. Photoshop filters we don't implement) leave the pixels alone.
+    let out = out.unwrap_or_else(|| cur.clone());
     if f.blend == BlendMode::Normal && f.opacity >= 1.0 { Ok(out) } else { Ok(blend_surfaces(cur, &out, f.blend, f.opacity.clamp(0.0, 1.0))) }
 }
 
@@ -407,6 +431,9 @@ fn render_opt(doc: &Document, sm: &SmartObject, ctx: &JobCtx, clip: Option<Rect>
     // The object's bounds, found once: the placed stage may have been evicted from the cache, and
     // placing it again for every render filter would decode the source each time.
     let mut object_bounds: Option<Rect> = None;
+    // The source's own size when the PSD's stored one no longer applies (decoded once, cached).
+    let quad = std::cell::OnceCell::new();
+    let placement = || *quad.get_or_init(|| placement_quad(sm, || source_box(doc, sm).map(|b| (b[2] - b[0], b[3] - b[1]))));
     for (i, (f, key)) in filters.iter().zip(&keys).enumerate().skip(done) {
         ctx.check()?;
         ctx.progress(i as f32 / n, "");
@@ -415,7 +442,7 @@ fn render_opt(doc: &Document, sm: &SmartObject, ctx: &JobCtx, clip: Option<Rect>
             Some(b) => b,
             None => *object_bounds.insert(filter_bounds(f, &placed()?.surface, canvas)),
         };
-        cur = Stage { surface: apply_smart_filter(f, &cur.surface, bounds, cur.extent, ctx)?, extent: cur.extent };
+        cur = Stage { surface: apply_smart_filter(f, &cur.surface, bounds, cur.extent, ctx, &placement)?, extent: cur.extent };
         stack_cache::put(*key, &cur);
     }
     ctx.progress(1.0, "");

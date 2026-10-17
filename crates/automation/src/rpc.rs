@@ -749,10 +749,14 @@ mod tests {
             (json!({"path": "design.png"}), "layer"),
             (json!({"layer": layer}), "path"),
             (json!({"layer": layer, "path": "design.png", "fit": "cover"}), "fit"),
+            (json!({"layer": layer, "path": "design.png", "clipToCanvas": "yes"}), "clipToCanvas"),
         ] {
             let refused = h.handle("doc.replaceContents", params).unwrap_err().to_string();
             assert!(refused.contains(reason), "{refused}");
         }
+        // `clipToCanvas` reaches the command (an unwarped placement is drawn whole either way).
+        let clipped = h.handle("doc.replaceContents", json!({"layer": layer, "path": "design.png", "fit": "stretch", "clipToCanvas": true})).unwrap();
+        assert_eq!(clipped["layer"].as_u64(), Some(layer), "{clipped}");
         drop(h);
         std::fs::remove_dir_all(base).unwrap();
     }

@@ -139,7 +139,8 @@ impl Headless {
     /// Replace the contents of smart object `layer` (all its instances) from a file: the
     /// capability-scoped counterpart of `layer.smartObjects.replaceContents`, which reads an
     /// ambient path. `path` resolves beneath the read root as in [`Headless::place`]; `fit`
-    /// (`"keep"`, `"stretch"` or `"contain"`) is the command's own option. One undo step.
+    /// (`"keep"`, `"stretch"` or `"contain"`) and `clipToCanvas` are the command's own options. One
+    /// undo step.
     pub fn replace_contents(&mut self, index: Option<usize>, path: &str, params: &Value) -> Result<Value, AutomationError> {
         let layer =
             params.get("layer").and_then(Value::as_u64).ok_or_else(|| AutomationError::BadRequest("doc.replaceContents needs a numeric `layer`".into()))?;
@@ -149,6 +150,11 @@ impl Headless {
             Some("stretch") => photocraft_engine::smart_cmds::Fit::Stretch,
             Some("contain") => photocraft_engine::smart_cmds::Fit::Contain,
             Some(other) => return Err(AutomationError::BadRequest(format!("`fit` must be \"keep\", \"stretch\" or \"contain\", not {other:?}"))),
+        };
+        let clip = match params.get("clipToCanvas") {
+            None | Some(Value::Null) => false,
+            Some(Value::Bool(b)) => *b,
+            Some(other) => return Err(AutomationError::BadRequest(format!("`clipToCanvas` must be true or false, not {other}"))),
         };
         let i = self.doc_index(index)?;
         if self.session.active_index() != Some(i) && !self.session.set_active(i) {
@@ -168,7 +174,7 @@ impl Headless {
         };
         let name = Path::new(path).file_name().and_then(|name| name.to_str()).unwrap_or(path);
         self.sync_jobs();
-        Ok(photocraft_engine::smart_cmds::replace_contents_fit(&mut self.session, photocraft_doc::LayerId(layer), name, bytes, fit)?)
+        Ok(photocraft_engine::smart_cmds::replace_contents_with(&mut self.session, photocraft_doc::LayerId(layer), name, bytes, fit, clip)?)
     }
 
     /// Export each exported layer of a document as its own file beneath the write root: the

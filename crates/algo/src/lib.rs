@@ -73,6 +73,7 @@ pub mod selection;
 mod selection_blur;
 mod shape_blur;
 mod sharpen;
+pub mod solved_mesh;
 pub mod stack;
 mod stylize;
 mod stylize2;

@@ -1,4 +1,4 @@
-//! Puppet Warp smart filters (`Fltr` class `rigidTransform`, filterID 990) as Photoshop writes
+//! Puppet Warp smart filters (`Fltr` class `rigidTransform`, filterID 990 or 898) as Photoshop writes
 //! them. Photoshop stores the deformation already solved, so it renders as a piecewise-affine
 //! mesh warp ([`photocraft_algo::solved_mesh`]) without solving anything again:
 //!
@@ -41,6 +41,9 @@ use crate::blocks::num;
 
 pub(super) const CLASS: &str = "rigidTransform";
 pub(super) const FILTER_ID: i32 = 990;
+/// The filterIDs Photoshop has saved this same layout under (`VrsM` 1, the same arrays and corners):
+/// 990, and 898 in some files (the neck pieces of an AOP polo template, ~175 shapes each).
+const FILTER_IDS: [i32; 2] = [FILTER_ID, 898];
 /// Smart filter command of a Photoshop Puppet Warp (rendered from its stored mesh, not editable).
 pub const COMMAND: &str = "psd.puppetWarp";
 /// The `puppetShape` layout this decoder knows (`VrsM`).
@@ -123,7 +126,7 @@ fn corners(f: &Descriptor) -> Result<Option<[[f64; 2]; 4]>, ()> {
 /// The mesh of a `filterFXList` item, `None` unless it is a Puppet Warp whose every shape decodes.
 pub(super) fn decode(item: &Descriptor) -> Option<StoredPuppet> {
     let f = get_desc(item, "Fltr")?;
-    if int(item, "filterID") != Some(FILTER_ID) || !f.class_id.is(CLASS) {
+    if !int(item, "filterID").is_some_and(|id| FILTER_IDS.contains(&id)) || !f.class_id.is(CLASS) {
         return None;
     }
     let Some(Value::List(shapes)) = f.get("puppetShapeList") else { return None };
@@ -169,7 +172,7 @@ pub(super) fn decode(item: &Descriptor) -> Option<StoredPuppet> {
 pub(super) fn import_params(item: &Descriptor) -> Option<J> {
     decode(item)?;
     let name = text_of(item, "Nm  ").unwrap_or_default().replace('&', "");
-    Some(json!({"name": name, "filterID": FILTER_ID, "psd": to_hex(&item.to_bytes())}))
+    Some(json!({"name": name, "filterID": int(item, "filterID").unwrap_or(FILTER_ID), "psd": to_hex(&item.to_bytes())}))
 }
 
 /// The item stored in `psd.puppetWarp` params.
@@ -294,6 +297,19 @@ mod tests {
         assert_eq!(stored_mesh(&f.params), decode(&src));
         // Through the descriptor's own bytes, as a PSD round trip reads it.
         assert_eq!(filter_from_item(&Descriptor::from_bytes(&back.to_bytes()).unwrap()), f);
+    }
+
+    #[test]
+    fn puppet_warps_saved_with_filter_id_898_render_too() {
+        // Same `rigidTransform` layout (VrsM 1, the same arrays and corners), another filterID: the
+        // neck pieces of the AOP Zipper Polo templates carry it, with ~175 shapes each.
+        let mut src = two_shapes();
+        set(&mut src, "filterID", Value::Integer(898));
+        let f = filter_from_item(&src);
+        assert_eq!(f.command, COMMAND);
+        assert_eq!(f.params["filterID"].as_i64(), Some(898));
+        assert_eq!(stored_mesh(&f.params), decode(&two_shapes()));
+        assert_eq!(item_for_filter(&f).unwrap().to_bytes(), src.to_bytes());
     }
 
     #[test]

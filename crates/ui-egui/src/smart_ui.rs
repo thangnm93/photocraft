@@ -72,7 +72,7 @@ fn filter_label(f: &photocraft_doc::SmartFilter) -> String {
     }
     if command == photocraft_engine::distort_cmds::PSD_LIQUIFY {
         let name = f.params.get("name").and_then(Value::as_str).map(|n| n.trim_end_matches("...").trim_end_matches('…')).filter(|n| !n.is_empty());
-        return name.map_or_else(|| tl!("Liquify").to_string(), str::to_string);
+        return name.map_or_else(|| tl!("Liquify…").trim_end_matches('…').to_string(), str::to_string);
     }
     photocraft_engine::commands::find(command)
         .map_or_else(|| command.rsplit('.').next().unwrap_or(command).to_string(), |c| tl!(c.label).trim_end_matches('…').to_string())

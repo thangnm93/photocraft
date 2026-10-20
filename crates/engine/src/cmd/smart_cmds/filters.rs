@@ -207,6 +207,12 @@ pub(super) fn set_filter_params(s: &mut Session, p: &Value) -> Result<Value> {
         if f.command == photocraft_io::smart_map::UNSUPPORTED_FILTER {
             return Err(bad(CMD, "this smart filter isn't implemented in PhotoCraft: it is kept as is (it can be hidden, moved or deleted)"));
         }
+        if f.command == crate::distort_cmds::PSD_LIQUIFY {
+            return Err(bad(
+                CMD,
+                "this Liquify was made in Photoshop: it is drawn from the mesh Photoshop stored and kept as is (it can be hidden, re-blended, moved or deleted)",
+            ));
+        }
         if f.command == crate::distort_cmds::PSD_PUPPET {
             return Err(bad(
                 CMD,

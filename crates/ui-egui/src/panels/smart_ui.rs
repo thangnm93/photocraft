@@ -69,7 +69,11 @@ pub(crate) fn filter_label(f: &photocraft_doc::SmartFilter) -> String {
         let name = f.params.get("name").and_then(Value::as_str).unwrap_or("Smart filter");
         return format!("{} (kept, not editable)", name.trim_end_matches("...").trim_end_matches('…'));
     }
-    // A Photoshop Puppet Warp, drawn from its stored mesh, shows the name Photoshop gave it.
+    // A Photoshop Puppet Warp or Liquify, drawn from its stored mesh, shows the name Photoshop gave it.
+    if command == photocraft_engine::distort_cmds::PSD_LIQUIFY {
+        let name = f.params.get("name").and_then(Value::as_str).map(|n| n.trim_end_matches("...").trim_end_matches('…')).filter(|n| !n.is_empty());
+        return name.map_or_else(|| tl!("Liquify…").trim_end_matches('…').to_string(), str::to_string);
+    }
     if command == photocraft_engine::distort_cmds::PSD_PUPPET {
         return f.params.get("name").and_then(Value::as_str).filter(|n| !n.is_empty()).map_or_else(|| tl!("Puppet Warp").to_string(), str::to_string);
     }

@@ -435,7 +435,15 @@ impl Ctx<'_> {
                 if id.is_empty() { SmartContentsId::fresh() } else { *self.smart_contents.entry(id.clone()).or_insert_with(SmartContentsId::fresh) };
             // Smart filters (`filterFX` in the placed-layer data) and their mask (`FEid`).
             let placed = rec.block(b"SoLd").or_else(|| rec.block(b"SoLE")).and_then(|b| crate::smart_map::parse_sold(&b.data));
-            let stack = placed.as_ref().and_then(|p| p.stack.clone()).unwrap_or_default();
+            let mut stack = placed.as_ref().and_then(|p| p.stack.clone()).unwrap_or_default();
+            // A Liquify is drawn in the filter buffer Photoshop used for this smart object: the
+            // rect of its `FEid` item.
+            if let Some(item) = placed.as_ref().and_then(|p| self.filter_effects.iter().find(|i| i.id == p.placed)) {
+                let r = item.rect;
+                for f in stack.filters.iter_mut().filter(|f| f.command == crate::smart_map::LIQUIFY) {
+                    crate::smart_map::liquify_set_frame(&mut f.params, Rect::new(r.left, r.top, r.right, r.bottom));
+                }
+            }
             let filter_mask = match &placed {
                 Some(p) if !stack.filters.is_empty() => self.filter_mask(&p.placed, &stack, &name),
                 _ => None,

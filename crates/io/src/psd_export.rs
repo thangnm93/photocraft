@@ -800,6 +800,8 @@ impl Ex {
         upsert(raw, &key, sold, None);
         if !stack.filters.is_empty() {
             let bounds = sm.cache.as_ref().map_or(self.canvas, |c| c.content_bounds().union(&self.canvas));
+            // A Liquify's filter buffer, so it is found again where it was drawn.
+            let bounds = stack.filters.iter().filter_map(|f| crate::smart_map::liquify_frame(&f.params)).fold(bounds, |b, r| b.union(&r));
             let item = match (sm.stack_mode, self.source_composite(&src.uuid)) {
                 (None, Some((img, img_bounds))) => {
                     let unfiltered = match &sm.perspective {

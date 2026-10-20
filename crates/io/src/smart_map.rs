@@ -22,7 +22,7 @@
 //! Camera Raw and Displace keep their whole item as a template next to the editable settings
 //! (Displace's carries the embedded displacement map, see `displace_map.rs`). Puppet Warp keeps
 //! its item verbatim and renders from the mesh Photoshop solved and stored in it
-//! (`puppet_map.rs`).
+//! (`puppet_map.rs`); so does Liquify, from its stored displacement mesh (`liquify_map.rs`).
 
 use photocraft_color::{BlendMode, ColorMode, PixelFormat, SampleType};
 use photocraft_doc::{LayerMask, SmartFilter};
@@ -41,10 +41,16 @@ use crate::blocks::{enum_of, get_desc, num};
 mod camera_raw;
 #[path = "displace_map.rs"]
 mod displace;
+#[path = "liquify_map.rs"]
+mod liquify;
 #[path = "puppet_map.rs"]
 mod puppet;
 
 pub use displace::embedded_map as displace_embedded_map;
+pub use liquify::{
+    COMMAND as LIQUIFY, StoredLiquify, placed_mesh as liquify_placed_mesh, set_frame as liquify_set_frame, stored_frame as liquify_frame,
+    stored_mesh as liquify_mesh,
+};
 pub use puppet::{COMMAND as PUPPET_WARP, StoredPuppet, stored_mesh as puppet_mesh};
 
 /// Command id of a Photoshop smart filter PhotoCraft does not implement. Its params hold the
@@ -480,6 +486,7 @@ pub fn filter_from_item(item: &Descriptor) -> SmartFilter {
         Some(camera_raw::CLASS) => camera_raw::import_params(item).map(|p| (camera_raw::COMMAND, p)),
         Some(displace::CLASS) => displace::import_params(item).map(|p| (displace::COMMAND, p)),
         Some(puppet::CLASS) => puppet::import_params(item).map(|p| (puppet::COMMAND, p)),
+        Some(liquify::CLASS) => liquify::import_params(item).map(|p| (liquify::COMMAND, p)),
         Some(GALLERY_CLASS) => fltr.and_then(|f| gallery_params(item, f)).map(|p| (GALLERY_COMMAND, p)),
         c => c.and_then(|c| known_params(c, fltr)),
     };
@@ -637,6 +644,9 @@ pub fn item_for_filter(f: &SmartFilter) -> Result<Descriptor, String> {
     }
     if f.command == puppet::COMMAND {
         return puppet::export_item(f);
+    }
+    if f.command == liquify::COMMAND {
+        return liquify::export_item(f);
     }
     if f.command == UNSUPPORTED_FILTER {
         let raw = f.params.get("psd").and_then(J::as_str).and_then(from_hex).ok_or("its filter data is missing")?;

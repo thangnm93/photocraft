@@ -261,3 +261,31 @@ fn liquify_survives_psd_and_native_saves() {
         }
     }
 }
+
+/// The filter buffer in the params comes from a file: one that can't be Photoshop's buffer for
+/// this smart object (much larger than the mesh, or huge) is not trusted. The render falls back to
+/// the input's bounds plus 3 px and PSD export doesn't grow the `FEid` rect to it, so a crafted
+/// frame can't size an allocation.
+#[test]
+fn an_implausible_frame_is_not_trusted() {
+    let big = 1 << 24;
+    for frame in [Rect::new(-1500, -4, W + 4, H + 4), Rect::new(-big, -big, big, big)] {
+        let (mut s, id) = session(8);
+        let placed = cache(&s, id);
+        let mut f = filter(&liquify_item(mesh(|_, _| [-1.25, 0.75])));
+        photocraft_io::smart_map::liquify_set_frame(&mut f.params, frame);
+        add(&mut s, id, f);
+        // Rendered over the block plus 3 px: the moved block is cut at its right edge.
+        let out = cache(&s, id);
+        let area = BLOCK.inflate(3);
+        let moved = photocraft_algo::resample::translate_surface(&placed, 5, -3);
+        assert!(worst(&out, &moved, Rect::new(area.x0, area.y0, area.x1, area.y1)) <= 1e-5, "{frame:?}");
+        assert_eq!(out.content_bounds().x1, area.x1, "{frame:?}");
+        let doc = s.active().unwrap().doc.clone();
+        let bytes = photocraft_io::export(&doc, "psd", &Default::default()).unwrap().bytes;
+        let file = photocraft_psd::PsdFile::from_bytes(&bytes).unwrap();
+        let fx = photocraft_psd::filter_effects::FilterEffects::parse(&file.global_block(b"FEid").expect("an FEid block").data).unwrap();
+        let r = fx.items[0].rect;
+        assert_eq!((r.left, r.top, r.right, r.bottom), (0, 0, W, H), "{frame:?}: the canvas, not the frame");
+    }
+}

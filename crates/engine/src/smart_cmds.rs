@@ -1474,6 +1474,12 @@ fn set_filter_params(s: &mut Session, p: &Value) -> Result<Value> {
                 "this Puppet Warp was made in Photoshop: it is drawn from the mesh Photoshop stored and kept as is (it can be hidden, re-blended, moved or deleted)",
             ));
         }
+        if f.command == crate::distort_cmds::PSD_LIQUIFY {
+            return Err(bad(
+                CMD,
+                "this Liquify was made in Photoshop: it is drawn from the mesh Photoshop stored and kept as is (it can be hidden, re-blended, moved or deleted)",
+            ));
+        }
         match (&mut f.params, new) {
             (Value::Object(old), Value::Object(n)) => old.extend(n),
             (slot, n) => *slot = n,

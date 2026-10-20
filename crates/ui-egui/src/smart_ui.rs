@@ -60,7 +60,7 @@ pub fn thumb_badge(ui: &egui::Ui, l: &Layer, thumb: Rect) {
 
 /// The display name of a smart filter (its command's label without the ellipsis). A Photoshop
 /// filter PhotoCraft doesn't implement shows its own name and is marked as kept as is; a
-/// Photoshop Puppet Warp (drawn from its stored mesh) shows the name Photoshop gave it.
+/// Photoshop Puppet Warp or Liquify (drawn from its stored mesh) shows the name Photoshop gave it.
 fn filter_label(f: &photocraft_doc::SmartFilter) -> String {
     let command = f.command.as_str();
     if command == photocraft_engine::smart_cmds::UNSUPPORTED_FILTER {
@@ -69,6 +69,10 @@ fn filter_label(f: &photocraft_doc::SmartFilter) -> String {
     }
     if command == photocraft_engine::distort_cmds::PSD_PUPPET {
         return f.params.get("name").and_then(Value::as_str).filter(|n| !n.is_empty()).map_or_else(|| tl!("Puppet Warp").to_string(), str::to_string);
+    }
+    if command == photocraft_engine::distort_cmds::PSD_LIQUIFY {
+        let name = f.params.get("name").and_then(Value::as_str).map(|n| n.trim_end_matches("...").trim_end_matches('…')).filter(|n| !n.is_empty());
+        return name.map_or_else(|| tl!("Liquify").to_string(), str::to_string);
     }
     photocraft_engine::commands::find(command)
         .map_or_else(|| command.rsplit('.').next().unwrap_or(command).to_string(), |c| tl!(c.label).trim_end_matches('…').to_string())
@@ -357,8 +361,8 @@ mod tests {
         [pixel, shape, smart].map(|id| doc.layer(photocraft_doc::LayerId(id)).unwrap().clone())
     }
 
-    /// Photoshop filters from a PSD: an unsupported one is marked as kept, a Puppet Warp (drawn
-    /// from its stored mesh) shows its own name.
+    /// Photoshop filters from a PSD: an unsupported one is marked as kept, a Puppet Warp or a
+    /// Liquify (drawn from its stored mesh) shows its own name.
     #[test]
     fn psd_smart_filters_show_their_photoshop_names() {
         let sf = |command: &str, params: Value| photocraft_doc::SmartFilter {
@@ -373,6 +377,10 @@ mod tests {
         assert_eq!(filter_label(&sf(puppet, json!({"name": "Puppet Warp", "psd": ""}))), "Puppet Warp");
         assert_eq!(filter_label(&sf(puppet, json!({"name": "Formgitter"}))), "Formgitter");
         assert_eq!(filter_label(&sf(puppet, json!({}))), "Puppet Warp");
+        let liquify = photocraft_engine::distort_cmds::PSD_LIQUIFY;
+        assert_eq!(filter_label(&sf(liquify, json!({"name": "Liquify...", "psd": ""}))), "Liquify");
+        assert_eq!(filter_label(&sf(liquify, json!({"name": "Verflüssigen…"}))), "Verflüssigen");
+        assert_eq!(filter_label(&sf(liquify, json!({}))), "Liquify");
         assert_eq!(filter_label(&sf("filter.blur.gaussianBlur", json!({}))), "Gaussian Blur");
     }
 

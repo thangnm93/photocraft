@@ -12,7 +12,9 @@
 //!
 //! A Puppet Warp made in Photoshop arrives from PSD as a [`PSD_PUPPET`] smart filter instead:
 //! Photoshop's own solve isn't ours, so it is drawn from the deformed mesh Photoshop stored
-//! ([`psd_puppet_surface`]) rather than re-solved from its pins.
+//! ([`psd_puppet_surface`]) rather than re-solved from its pins. A Liquify made in Photoshop
+//! arrives as a [`PSD_LIQUIFY`] smart filter, drawn from the displacement mesh Photoshop stored
+//! ([`psd_liquify_surface`]) rather than replayed from strokes.
 
 use std::cell::RefCell;
 
@@ -36,6 +38,9 @@ pub const PUPPET: &str = "edit.puppetWarp";
 pub const PUPPET_SMART: &str = "layer.smartObjects.puppetWarp";
 pub const PERSPECTIVE: &str = "edit.perspectiveWarp";
 pub const PERSPECTIVE_SMART: &str = "layer.smartObjects.perspectiveWarp";
+/// A Liquify smart filter from a Photoshop PSD (not a command: it can be hidden, re-blended, moved
+/// or deleted, not edited).
+pub use photocraft_io::smart_map::LIQUIFY as PSD_LIQUIFY;
 /// A Puppet Warp smart filter from a Photoshop PSD (not a command: it can be hidden, re-blended,
 /// moved or deleted, not edited).
 pub use photocraft_io::smart_map::PUPPET_WARP as PSD_PUPPET;
@@ -204,6 +209,16 @@ pub fn psd_puppet_surface(params: &Value, surf: &Surface, placement: Option<Quad
     photocraft_algo::solved_mesh::warp_solved(surf, &mesh, Interp::Bilinear)
 }
 
+/// Draws a Photoshop Liquify ([`PSD_LIQUIFY`] params) on `surf`, the placed smart object: inside
+/// the filter buffer Photoshop used (stored with the filter, else `surf`'s bounds plus a margin),
+/// each pixel shows `surf` displaced by the stored mesh. `None` when the stored data doesn't
+/// decode or the buffer is too large: the filter then leaves the pixels alone, like one
+/// PhotoCraft doesn't implement.
+pub fn psd_liquify_surface(params: &Value, surf: &Surface) -> Option<Surface> {
+    let (mesh, area) = photocraft_io::smart_map::liquify_placed_mesh(params, surf.content_bounds())?;
+    photocraft_algo::displacement_mesh::warp_displacement(surf, &mesh, area)
+}
+
 /// Smart-filter hook: re-applies a stored Liquify / Puppet / Perspective Warp to a rendered
 /// smart object (`None` for other ids). A Photoshop Puppet Warp drawn here has no placement to
 /// follow (see [`psd_puppet_surface`]).
@@ -217,6 +232,7 @@ pub fn apply_to_surface(id: &str, params: &Value, surf: &Surface, canvas: Rect) 
         PUPPET | PUPPET_SMART => Some(puppet_surface(surf, &puppet_params(id, params).ok()?, interp(params)).unwrap_or_else(|| surf.clone())),
         PERSPECTIVE | PERSPECTIVE_SMART => Some(perspective_surface(surf, &perspective_params(id, params).ok()?, interp(params))),
         PSD_PUPPET => Some(psd_puppet_surface(params, surf, None).unwrap_or_else(|| surf.clone())),
+        PSD_LIQUIFY => Some(psd_liquify_surface(params, surf).unwrap_or_else(|| surf.clone())),
         _ => None,
     }
 }

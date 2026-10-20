@@ -30,6 +30,7 @@ mod cutout;
 mod denoise;
 pub mod dff;
 pub mod direct;
+pub mod displacement_mesh;
 mod distort;
 mod distort2;
 pub mod erase;

@@ -57,7 +57,7 @@ mod liquify;
 pub use displace::{embed_map as displace_embed_map, embedded_map as displace_embedded_map, without_map as displace_without_map};
 pub use liquify::{
     COMMAND as LIQUIFY, StoredLiquify, placed_mesh as liquify_placed_mesh, set_frame as liquify_set_frame, stored_frame as liquify_frame,
-    stored_mesh as liquify_mesh,
+    stored_mesh as liquify_mesh, trusted_frame as liquify_trusted_frame,
 };
 pub use puppet::{COMMAND as PUPPET_WARP, StoredPuppet, stored_mesh as puppet_mesh};
 

@@ -27,8 +27,8 @@
 //! cache item: the placed content's control bounds plus 3 px, grown to keep a mesh made on an
 //! earlier placement): the mesh sits at its bottom-left corner. Import stores that rect in
 //! `params.frame` (`[x0, y0, x1, y1]`, document pixels), so the Liquify stays where Photoshop drew
-//! it when the contents are replaced; without one the frame is the filter input's bounds plus
-//! 3 px.
+//! it when the contents are replaced; without one, or with one that can't be that buffer (it comes
+//! from the file: see [`trusted_frame`]), the frame is the filter input's bounds plus 3 px.
 //!
 //! [`COMMAND`] keeps the whole `filterFXList` item verbatim (hex in `params.psd`, like an
 //! unsupported filter) and decodes the mesh from it each time it renders, so PSD export writes
@@ -60,6 +60,12 @@ const NODE_SPACING: u32 = 4;
 const BUFFER_MARGIN: i32 = 3;
 /// Farthest a stored frame may reach from the origin (px): beyond any PSB canvas.
 const MAX_FRAME: i64 = 1 << 24;
+/// How much larger than the mesh's frame a stored filter buffer may be, each way (px). Photoshop
+/// grows the buffer to keep the input when the smart object was re-placed after the Liquify was
+/// made: by up to 48 px in the files measured.
+const MAX_GROWTH: i64 = 1024;
+/// Largest filter buffer trusted from a file (px): 16k × 16k, a mesh at [`MAX_NODES`].
+const MAX_FRAME_PIXELS: i64 = 1 << 28;
 /// Mesh nodes a decoded mesh may have (a frame of 16k × 16k px).
 const MAX_NODES: usize = 1 << 24;
 /// Farthest a node may be displaced (cells): beyond any PSB canvas.
@@ -167,6 +173,19 @@ pub fn stored_frame(params: &J) -> Option<Rect> {
     Some(Rect::new(i32::try_from(x0).ok()?, i32::try_from(y0).ok()?, i32::try_from(x1).ok()?, i32::try_from(y1).ok()?))
 }
 
+/// The stored frame (see [`stored_frame`]) when it can be Photoshop's filter buffer for a smart
+/// object whose filter input has the bounds `input`: it holds the mesh's frame and at most
+/// [`MAX_GROWTH`] px more each way (the buffer is the mesh's frame grown to keep the input inside),
+/// it reaches the input plus [`BUFFER_MARGIN`], and it is at most [`MAX_FRAME_PIXELS`]. `None`
+/// otherwise: the frame comes from the file, so it must not size an allocation by itself.
+pub fn trusted_frame(params: &J, input: Rect) -> Option<Rect> {
+    let f = stored_frame(params)?;
+    let m = stored_mesh(params)?;
+    let (fw, fh, [mw, mh]) = (i64::from(f.width()), i64::from(f.height()), m.size.map(i64::from));
+    let fits = fw >= mw && fh >= mh && fw - mw <= MAX_GROWTH && fh - mh <= MAX_GROWTH && fw * fh <= MAX_FRAME_PIXELS;
+    (fits && !input.is_empty() && !f.intersect(&input.inflate(BUFFER_MARGIN)).is_empty()).then_some(f)
+}
+
 /// Stores Photoshop's filter buffer for the smart object (its `FEid` rect) in `psd.liquify` params.
 pub fn set_frame(params: &mut J, buffer: Rect) {
     if let Some(p) = params.as_object_mut() {
@@ -175,11 +194,12 @@ pub fn set_frame(params: &mut J, buffer: Rect) {
 }
 
 /// The mesh of `psd.liquify` params placed in the document, and the area it renders over (the
-/// filter buffer): the stored frame, or `input` (the filter input's bounds) plus 3 px. `None` when
-/// the stored item doesn't decode or there is nothing to render over.
+/// filter buffer): the stored frame when it is trusted ([`trusted_frame`]), else `input` (the
+/// filter input's bounds) plus 3 px. `None` when the stored item doesn't decode or there is
+/// nothing to render over.
 pub fn placed_mesh(params: &J, input: Rect) -> Option<(DisplacementMesh, Rect)> {
     let m = stored_mesh(params)?;
-    let buffer = match stored_frame(params) {
+    let buffer = match trusted_frame(params, input) {
         Some(f) => f,
         None if input.is_empty() => return None,
         None => input.inflate(BUFFER_MARGIN),
@@ -447,7 +467,9 @@ mod tests {
         let mut f = filter_from_item(&liquify());
         set_frame(&mut f.params, Rect::new(10, 5, 30, 26));
         assert_eq!(stored_frame(&f.params), Some(Rect::new(10, 5, 30, 26)));
-        let (m, area) = placed_mesh(&f.params, Rect::new(0, 0, 1, 1)).unwrap();
+        let input = Rect::new(13, 8, 27, 22);
+        assert_eq!(trusted_frame(&f.params, input), Some(Rect::new(10, 5, 30, 26)), "a normal frame is kept unchanged");
+        let (m, area) = placed_mesh(&f.params, input).unwrap();
         assert_eq!(area, Rect::new(10, 5, 30, 26));
         // 20 × 13 px in 5 × 3 cells.
         let cell = [4.0, 13.0 / 3.0];
@@ -488,6 +510,41 @@ mod tests {
         let mut g = f.clone();
         set_frame(&mut g.params, Rect::new(-5, -5, 50, 50));
         assert_eq!(item_for_filter(&g).unwrap().to_bytes(), liquify().to_bytes());
+    }
+
+    /// The stored frame comes from the file: one that can't be Photoshop's buffer for this smart
+    /// object (far from its content, smaller than the mesh, much larger than it, or huge) is not
+    /// trusted, and the buffer is the input's bounds plus 3 px, so nothing is allocated past them.
+    #[test]
+    fn implausible_frames_fall_back_to_the_input() {
+        let f = filter_from_item(&liquify());
+        let input = Rect::new(40, 50, 54, 60);
+        let big = 1 << 24;
+        for frame in [
+            Rect::new(-big, -big, big, big),
+            Rect::new(-big, -big, -big + 20, -big + 13),
+            Rect::new(1000, 1000, 1020, 1013),
+            Rect::new(40, 50, 59, 63),
+            Rect::new(40, 50, 60, 62),
+            Rect::new(-2000, 50, 60, 63),
+            Rect::new(40, -2000, 60, 63),
+        ] {
+            let mut p = f.params.clone();
+            set_frame(&mut p, frame);
+            assert_eq!(stored_frame(&p), Some(frame), "{frame:?}");
+            assert_eq!(trusted_frame(&p, input), None, "{frame:?}");
+            assert_eq!(placed_mesh(&p, input).map(|m| m.1), Some(input.inflate(3)), "{frame:?}");
+        }
+        // Mesh-sized, or grown to keep the input inside: trusted.
+        for frame in [Rect::new(40, 50, 60, 63), Rect::new(37, 47, 60, 70), Rect::new(0, 0, 60, 63)] {
+            let mut p = f.params.clone();
+            set_frame(&mut p, frame);
+            assert_eq!(trusted_frame(&p, input), Some(frame), "{frame:?}");
+        }
+        // Nothing to compare with: not trusted.
+        let mut p = f.params.clone();
+        set_frame(&mut p, Rect::new(40, 50, 60, 63));
+        assert_eq!(trusted_frame(&p, Rect::default()), None);
     }
 
     /// Corrupted bytes of a Liquify item never panic, whatever they decode to.

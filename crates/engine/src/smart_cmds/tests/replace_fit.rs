@@ -342,6 +342,19 @@ fn clip_to_canvas_keeps_the_flattened_result_of_a_layer_with_effects() {
 }
 
 #[test]
+fn clip_to_canvas_keeps_the_flattened_result_inside_a_group_with_effects() {
+    // A group's inside stroke follows the edge of what its children cover: a child cut at the
+    // canvas would draw it there.
+    let (full, clipped) = full_and_clipped_flat("group-fx", |s, id| {
+        s.execute("layer.groupLayers", json!({})).unwrap();
+        let group = s.active().unwrap().active_layer.unwrap();
+        assert_eq!(s.active().unwrap().doc.path_of(id).map(|p| p.len()), Some(2), "the smart object is in the group");
+        s.execute("layer.layerStyle.stroke", json!({"layer": group.0, "size": 3, "position": "inside", "color": "#ff0000"})).unwrap();
+    });
+    assert_eq!(full, clipped);
+}
+
+#[test]
 fn clip_to_canvas_keeps_the_flattened_result_of_a_layer_with_smart_filters() {
     // A blur reads past the canvas edge; a clipped layer would repeat the edge instead.
     let (full, clipped) = full_and_clipped_flat("sf", |s, id| {

@@ -1113,10 +1113,11 @@ fn set_shared_source_fit(s: &mut Session, id: LayerId, label: &str, keep_psd: bo
                 smart_mut(doc, instance)?.cache = None;
                 continue;
             }
-            // Effects follow the layer's edge and bounds, and smart filters read past the canvas:
-            // such an instance is rendered whole, so the flattened result stays the same.
+            // Effects (the layer's or a group's) follow the edge and bounds of what they cover, and
+            // smart filters read past the canvas: such an instance is rendered whole, so the
+            // flattened result stays the same.
             let layer = doc.layer(instance).ok_or(EngineError::NoLayer(instance))?;
-            let clip_this = (clip && !needs_whole_render(layer)).then(|| visible_clip(layer, doc.bounds()));
+            let clip_this = (clip && !needs_whole_render(doc, instance)).then(|| visible_clip(layer, doc.bounds()));
             refresh_or_fail_opt(doc, instance, clip_this)?;
         }
         Ok((doc.id, contents_id, changed))
@@ -1174,12 +1175,12 @@ pub fn replace_contents_fit(s: &mut Session, id: LayerId, file_name: &str, bytes
     replace_contents_with(s, id, file_name, bytes, fit, false)
 }
 
-/// [`replace_contents_fit`]; with `clip_to_canvas`, warped instances without layer effects or
-/// visible smart filters are rendered only inside the canvas (and their layer mask's revealed
-/// area), and hidden instances not at all. What a flattened export of the document shows is the
-/// same, at a fraction of the cost when a placement is much larger than the canvas; the parts
-/// left out are gone from the layer (a hidden instance shows nothing) until something
-/// re-renders it in full (Undo restores the previous contents as before).
+/// [`replace_contents_fit`]; with `clip_to_canvas`, warped instances without layer effects (their
+/// own or a group's around them) or visible smart filters are rendered only inside the canvas (and
+/// their layer mask's revealed area), and hidden instances not at all. What a flattened export of
+/// the document shows is the same, at a fraction of the cost when a placement is much larger than
+/// the canvas; the parts left out are gone from the layer (a hidden instance shows nothing) until
+/// something re-renders it in full (Undo restores the previous contents as before).
 pub fn replace_contents_with(s: &mut Session, id: LayerId, file_name: &str, bytes: Vec<u8>, fit: Fit, clip_to_canvas: bool) -> Result<Value> {
     // Decode now (fail before touching the document) into the source cache, under the key the
     // re-render below looks up, so the new file is decoded once.
@@ -1198,12 +1199,14 @@ pub fn replace_contents_with(s: &mut Session, id: LayerId, file_name: &str, byte
     set_shared_source_fit(s, id, "Replace Contents", false, SmartSource::Embedded { file_name: file_name.to_string(), bytes }, stretch, clip_to_canvas)
 }
 
-/// Whether a smart object layer must be rendered whole for the flattened document to be right:
-/// layer effects lay out against the layer's bounds and edges (strokes, inner shadows, aligned
-/// gradients and patterns), and smart filters sample beyond the canvas.
-fn needs_whole_render(l: &Layer) -> bool {
-    let filtered = matches!(&l.content, LayerContent::Smart(sm) if sm.filters_enabled && sm.smart_filters.iter().any(|f| f.visible));
-    photocraft_compose::effects::has_effects(l) || filtered
+/// Whether smart object layer `id` must be rendered whole for the flattened document to be right:
+/// layer effects, its own or those of a group around it, lay out against the bounds and edges of
+/// what they cover (strokes, inner shadows, aligned gradients and patterns), and smart filters
+/// sample beyond the canvas.
+fn needs_whole_render(doc: &Document, id: LayerId) -> bool {
+    let filtered =
+        doc.layer(id).is_some_and(|l| matches!(&l.content, LayerContent::Smart(sm) if sm.filters_enabled && sm.smart_filters.iter().any(|f| f.visible)));
+    filtered || doc.path_of(id).is_none_or(|p| (1..=p.len()).any(|n| doc.layer_at(&p[..n]).is_some_and(photocraft_compose::effects::has_effects)))
 }
 
 /// Whether `id` or a group around it is hidden, so it shows nowhere in the flattened document.

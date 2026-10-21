@@ -1278,10 +1278,9 @@ fn stretch_placement(sm: &mut SmartObject, old: [f64; 4], new: [f64; 4]) {
         w.bounds = [(b[0] - tx) / kx, (b[1] - ty) / ky, (b[2] - tx) / kx, (b[3] - ty) / ky];
         return;
     }
-    if let Some(h) = sm.perspective.as_mut() {
-        let [a, b, c, d, e, f, g, i, j] = *h;
-        // H · S, row-major, S = [kx 0 tx; 0 ky ty; 0 0 1].
-        *h = [a * kx, b * ky, a * tx + b * ty + c, d * kx, e * ky, d * tx + e * ty + f, g * kx, i * ky, g * tx + i * ty + j];
+    if let Some([a, b, c, d, e, f, g, i, j]) = sm.perspective {
+        // H · S, row-major, S = [kx 0 tx; 0 ky ty; 0 0 1]; `set_placement` keeps `transform` in step.
+        set_placement(sm, Homography([a * kx, b * ky, a * tx + b * ty + c, d * kx, e * ky, d * tx + e * ty + f, g * kx, i * ky, g * tx + i * ty + j]));
         return;
     }
     sm.transform = sm.transform.mul(&Affine { m: [kx, 0.0, 0.0, ky, tx, ty] });

@@ -133,6 +133,23 @@ fn stretch_fills_the_old_box_through_a_perspective() {
     full_vs_stretched("perspective", |sm, _| sm.perspective = Some([1.0, 0.1, -6.0, 0.05, 1.1, 5.0, 0.002, 0.001, 1.0]));
 }
 
+/// Under a perspective, `transform` stays the perspective's affine at the source origin, as after
+/// any other placement edit: an SVG is rasterised at that scale, so a stale one would come out
+/// blurred or oversampled.
+#[test]
+fn stretch_under_a_perspective_keeps_the_transform_in_step() {
+    let dir = tmp_dir("perspective-transform");
+    let (mut s, id) = smart_session();
+    let h = Homography([1.0, 0.1, -6.0, 0.05, 1.1, 5.0, 0.002, 0.001, 1.0]);
+    set_placement(&mut s, id, |sm| crate::smart_cmds::set_placement(sm, h));
+    replace(&mut s, id, &png_file(&dir, "small.png", 5, 7, [0.0, 1.0, 0.0]), Some("stretch"));
+    let sm = active_smart(&s);
+    let mut expected = sm.clone();
+    crate::smart_cmds::set_placement(&mut expected, Homography(sm.perspective.expect("still a perspective")));
+    assert!(sm.transform.m.iter().zip(expected.transform.m).all(|(a, b)| (a - b).abs() < 1e-9), "{:?} vs {:?}", sm.transform, expected.transform);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn keep_is_the_default_and_keeps_the_pixel_size() {
     let dir = tmp_dir("keep");

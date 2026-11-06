@@ -47,12 +47,12 @@ mod camera_raw;
 mod displace;
 #[path = "hue_sat_filter_map.rs"]
 mod hue_sat;
+#[path = "liquify_map.rs"]
+mod liquify;
 #[path = "perspective_warp_map.rs"]
 mod perspective_warp;
 #[path = "puppet_map.rs"]
 mod puppet;
-#[path = "liquify_map.rs"]
-mod liquify;
 
 pub use displace::{embed_map as displace_embed_map, embedded_map as displace_embedded_map, without_map as displace_without_map};
 pub use liquify::{

@@ -53,6 +53,10 @@ fn set_shared_source_fit(s: &mut Session, id: LayerId, label: &str, keep_psd: bo
         let mut warnings = std::collections::BTreeSet::new();
         // The instances all warp the new contents: one reduced copy of them serves every shrink.
         let _levels = photocraft_algo::warp::reuse_levels();
+        // The instances all render the new contents: decode them once, and let instances at one
+        // place share their placement, whatever the cache budgets keep between commands.
+        let _sources = super::source::reuse_sources();
+        let _stages = super::stack_cache::reuse_stages();
         for &instance in &changed {
             if let Some(st) = &stretch {
                 let old_box = st.from.iter().find(|(l, _)| *l == instance).map(|(_, b)| *b).ok_or(EngineError::NoLayer(instance))?;

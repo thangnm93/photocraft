@@ -48,6 +48,7 @@ pub const METHODS: &[&str] = &[
     "doc.open",
     "doc.place",
     "doc.replaceSmartObject",
+    "doc.replaceContents",
     "doc.new",
     "doc.save",
     "doc.exportLayers",
@@ -154,7 +155,8 @@ impl Headless {
                 opts.remove("index");
                 self.place(index_of(&p)?, path, &Value::Object(opts))
             }
-            "doc.replaceSmartObject" => {
+            // `doc.replaceContents`: the fork's earlier name, still sent by pcrender.
+            "doc.replaceSmartObject" | "doc.replaceContents" => {
                 let path = str_of(&p, "path").ok_or_else(|| bad("doc.replaceSmartObject needs `path`"))?;
                 let mut opts = p.as_object().cloned().unwrap_or_default();
                 opts.remove("path");

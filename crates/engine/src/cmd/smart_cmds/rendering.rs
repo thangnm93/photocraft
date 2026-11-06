@@ -1,6 +1,7 @@
 use super::filters::smart;
 use super::source::{
-    SourceImage, cache_get, cache_key, cache_put, convert_svg_source, source_bytes, source_image, source_surface_from_buffer, svg_source_image_in, vector_scale,
+    CacheKey, SourceImage, cache_get, cache_key, cache_put, convert_svg_source, source_bytes, source_image, source_image_keyed, source_surface_from_buffer,
+    svg_source_image_in, vector_scale,
 };
 use super::{
     Affine, Arc, BlendMode, Document, EngineError, Homography, JobCtx, Layer, LayerContent, LayerId, PixelFormat, Rect, Result, SmartFilter, SmartObject,
@@ -11,8 +12,13 @@ use std::sync::Mutex;
 /// Layer › Smart Objects › Stack Mode: the source's layers (or, when it holds a single group, the
 /// group's layers) combined per pixel with `mode`. Cached like [`source_image`], keyed by mode.
 pub fn stack_image(file_name: &str, bytes: &[u8], fmt: PixelFormat, mode: photocraft_doc::StackMode) -> Result<SourceImage> {
+    stack_image_keyed(file_name, bytes, cache_key(bytes, fmt), mode)
+}
+
+/// [`stack_image`] with the bytes' cache key already known (see [`contents_digest`]).
+fn stack_image_keyed(file_name: &str, bytes: &[u8], mut key: CacheKey, mode: photocraft_doc::StackMode) -> Result<SourceImage> {
     use photocraft_algo::stack::Stat;
-    let mut key = cache_key(bytes, fmt);
+    let fmt = key.1;
     key.0 = *blake3::hash(&[&key.0[..], b"stack:", mode.id().as_bytes()].concat()).as_bytes();
     if let Some(img) = cache_get(&key) {
         return Ok(img);
@@ -165,8 +171,9 @@ fn apply_smart_filter(f: &SmartFilter, cur: &Surface, canvas: Rect, extent: Rect
 }
 
 /// The source placed in document pixels, before any smart filter; a warped raster placement is
-/// rendered only inside `clip` when given.
-pub(super) fn place(name: &str, bytes: &[u8], doc: &Document, sm: &SmartObject, clip: Option<Rect>) -> Result<Surface> {
+/// rendered only inside `clip` when given. `digest` is the blake3 of `bytes` (see
+/// [`contents_digest`]).
+pub(super) fn place(name: &str, bytes: &[u8], digest: [u8; 32], doc: &Document, sm: &SmartObject, clip: Option<Rect>) -> Result<Surface> {
     #[cfg(test)]
     super::PLACEMENTS.with(|p| p.set(p.get() + 1));
     let fmt = doc.pixel_format();
@@ -193,8 +200,8 @@ pub(super) fn place(name: &str, bytes: &[u8], doc: &Document, sm: &SmartObject, 
     let img = match sm.stack_mode {
         Some(mode) if photocraft_io::svg::is_svg(bytes) => convert_svg_source(stack_image(name, bytes, PixelFormat::RGBA32F, mode)?, doc)?,
         None if photocraft_io::svg::is_svg(bytes) => svg_source_image_in(bytes, doc, 1.0)?,
-        Some(mode) => stack_image(name, bytes, fmt, mode)?,
-        None => source_image(name, bytes, fmt)?,
+        Some(mode) => stack_image_keyed(name, bytes, (digest, fmt), mode)?,
+        None => source_image_keyed(name, bytes, (digest, fmt))?,
     };
     // The placed stage is unclipped: a large enough placement (an image scaled to fill a huge
     // frame) would otherwise fill memory before any allocation could fail.
@@ -260,6 +267,31 @@ impl NativeDigests {
 }
 
 static NATIVE_DIGESTS: Mutex<NativeDigests> = Mutex::new(NativeDigests::new(NativeDigests::CAPACITY));
+
+/// Digests of smart-object contents, remembered per buffer like [`NATIVE_DIGESTS`].
+static CONTENTS_DIGESTS: Mutex<NativeDigests> = Mutex::new(NativeDigests::new(NativeDigests::CAPACITY));
+
+#[cfg(test)]
+thread_local! {
+    /// Buffers hashed by [`contents_digest`] on this thread.
+    pub(super) static CONTENTS_HASHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The blake3 digest of a smart object's contents, hashed only the first time this buffer is
+/// seen. Every instance of a smart object holds the same `Arc` of its file, so re-rendering N
+/// instances hashes the file once, not twice per instance (its stage key and its source cache
+/// key; an 80 MB print file through 15 instances was ~3 s of hashing).
+pub(super) fn contents_digest(bytes: &Arc<Vec<u8>>) -> [u8; 32] {
+    let lock = || CONTENTS_DIGESTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(digest) = lock().get(bytes) {
+        return digest;
+    }
+    #[cfg(test)]
+    CONTENTS_HASHES.with(|count| count.set(count.get() + 1));
+    let digest = *blake3::hash(bytes).as_bytes();
+    lock().insert(bytes, digest);
+    digest
+}
 
 /// The BLAKE3 digest of a native source, hashed only the first time this allocation is seen.
 /// The lock is not held while hashing, so other renders never wait on a 16 MiB hash.
@@ -334,7 +366,8 @@ fn render_opt(doc: &Document, sm: &SmartObject, ctx: &JobCtx, clip: Option<Rect>
     let Some((name, bytes)) = source_bytes(&doc.metadata, &sm.source) else { return Ok(None) };
     let bytes = display_source(sm, &bytes);
     let (fmt, canvas) = (doc.pixel_format(), doc.bounds());
-    let mut placed_key = stack_cache::placed_key(&bytes, fmt, sm, canvas);
+    let digest = contents_digest(&bytes);
+    let mut placed_key = stack_cache::placed_key(&digest, fmt, sm, canvas);
     if photocraft_io::svg::is_svg(&bytes) {
         let mut h = blake3::Hasher::new();
         h.update(&placed_key);
@@ -348,7 +381,7 @@ fn render_opt(doc: &Document, sm: &SmartObject, ctx: &JobCtx, clip: Option<Rect>
         if let Some(stage) = stack_cache::get(&placed_key) {
             return Ok(stage);
         }
-        let surface = place(&name, &bytes, doc, sm, clip)?;
+        let surface = place(&name, &bytes, digest, doc, sm, clip)?;
         // Edge pixels repeat at the canvas ∪ placed-content edge, as for layer filters.
         let stage = Stage { extent: canvas.union(&surface.content_bounds()), surface };
         stack_cache::put(placed_key, &stage);

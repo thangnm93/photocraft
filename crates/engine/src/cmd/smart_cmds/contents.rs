@@ -169,6 +169,9 @@ pub fn replace_contents_fit(s: &mut Session, id: LayerId, file_name: &str, bytes
 /// the canvas; the parts left out are gone from the layer (a hidden instance shows nothing) until
 /// something re-renders it in full (Undo restores the previous contents as before).
 pub fn replace_contents_with(s: &mut Session, id: LayerId, file_name: &str, bytes: Vec<u8>, fit: Fit, clip_to_canvas: bool) -> Result<Value> {
+    // The check below decodes the new file for the re-render to reuse: keep it for this command
+    // even when the source cache keeps nothing (`smartSourceCacheMb` 0).
+    let _sources = super::source::reuse_sources();
     let doc = &s.active().ok_or(EngineError::NoDocument)?.doc;
     // The old boxes first: without a stored size they decode the old contents.
     let from = match fit {

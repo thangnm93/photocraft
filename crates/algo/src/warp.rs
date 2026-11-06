@@ -41,13 +41,25 @@ pub fn place_source(
     t: &photocraft_geom::Affine,
     warp: Option<&photocraft_geom::warp::Warp>,
 ) -> Result<Surface, photocraft_raster::AllocationError> {
+    place_source_clipped(src, src_rect, t, warp, None)
+}
+
+/// [`place_source`], a warped placement rendered only inside `clip` (destination pixels) when
+/// given: the same pixels there, none outside. Unwarped placements are always rendered whole.
+pub fn place_source_clipped(
+    src: &Surface,
+    src_rect: Rect,
+    t: &photocraft_geom::Affine,
+    warp: Option<&photocraft_geom::warp::Warp>,
+    clip: Option<Rect>,
+) -> Result<Surface, photocraft_raster::AllocationError> {
     let [a, b, c, d, e, f] = t.m;
     if let Some(w) = warp.filter(|w| !w.is_identity()) {
         let map = |x: f64, y: f64| {
             let (u, v) = w.map(x, y);
             (a * u + c * v + e, b * u + d * v + f)
         };
-        return Ok(warp_mesh_surface(src, src_rect, &map, Interp::Bicubic));
+        return Ok(mesh(src, src_rect, &map, Interp::Bicubic, true, clip, &Interrupt::NONE));
     }
     let near = |x: f64, y: f64| (x - y).abs() < 1e-9;
     if near(a, 1.0) && near(b, 0.0) && near(c, 0.0) && near(d, 1.0) && near(e, e.round()) && near(f, f.round()) {
@@ -64,12 +76,23 @@ pub fn place_source_projective(
     h: &crate::transform::Homography,
     warp: Option<&photocraft_geom::warp::Warp>,
 ) -> Result<Surface, photocraft_raster::AllocationError> {
+    place_source_projective_clipped(src, src_rect, h, warp, None)
+}
+
+/// [`place_source_projective`], a warped placement rendered only inside `clip` when given.
+pub fn place_source_projective_clipped(
+    src: &Surface,
+    src_rect: Rect,
+    h: &crate::transform::Homography,
+    warp: Option<&photocraft_geom::warp::Warp>,
+    clip: Option<Rect>,
+) -> Result<Surface, photocraft_raster::AllocationError> {
     if let Some(w) = warp.filter(|w| !w.is_identity()) {
         let map = |x: f64, y: f64| {
             let (u, v) = w.map(x, y);
             h.apply(u, v)
         };
-        return Ok(warp_mesh_surface(src, src_rect, &map, Interp::Bicubic));
+        return Ok(mesh(src, src_rect, &map, Interp::Bicubic, true, clip, &Interrupt::NONE));
     }
     crate::transform::warp_surface(src, src_rect, h, Interp::Bicubic)
 }
@@ -83,17 +106,33 @@ pub fn warp_mesh_surface(src: &Surface, src_rect: Rect, f: &(dyn Fn(f64, f64) ->
 
 /// [`warp_mesh_surface`] reporting progress per destination tile; `None` once `ctl` is cancelled.
 pub fn warp_mesh_surface_with(src: &Surface, src_rect: Rect, f: &(dyn Fn(f64, f64) -> (f64, f64) + Sync), interp: Interp, ctl: &Interrupt) -> Option<Surface> {
-    let out = mesh(src, src_rect, f, interp, true, ctl);
+    let out = mesh(src, src_rect, f, interp, true, None, ctl);
     (!ctl.cancelled()).then_some(out)
 }
 
 /// [`warp_mesh_surface`], with the reduced-level sampling of strong shrinks switched by `mips`
 /// (off: every shrink averages subsamples of the full-resolution source, the exact reference).
 pub(crate) fn warp_mesh_surface_mips(src: &Surface, src_rect: Rect, f: &(dyn Fn(f64, f64) -> (f64, f64) + Sync), interp: Interp, mips: bool) -> Surface {
-    mesh(src, src_rect, f, interp, mips, &Interrupt::NONE)
+    mesh(src, src_rect, f, interp, mips, None, &Interrupt::NONE)
 }
 
-fn mesh(src: &Surface, src_rect: Rect, f: &(dyn Fn(f64, f64) -> (f64, f64) + Sync), interp: Interp, mips: bool, ctl: &Interrupt) -> Surface {
+/// [`warp_mesh_surface`] restricted to `clip` (destination pixels): the same pixels inside it,
+/// nothing outside. For callers that only need what lands on the canvas (a flattened export), so
+/// a placement much larger than the canvas costs only its visible part.
+pub fn warp_mesh_surface_clipped(src: &Surface, src_rect: Rect, f: &(dyn Fn(f64, f64) -> (f64, f64) + Sync), interp: Interp, clip: Rect) -> Surface {
+    mesh(src, src_rect, f, interp, true, Some(clip), &Interrupt::NONE)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn mesh(
+    src: &Surface,
+    src_rect: Rect,
+    f: &(dyn Fn(f64, f64) -> (f64, f64) + Sync),
+    interp: Interp,
+    mips: bool,
+    clip: Option<Rect>,
+    ctl: &Interrupt,
+) -> Surface {
     if src_rect.is_empty() {
         let fmt = src.format();
         return Surface::new(PixelFormat::new(fmt.mode, fmt.sample, true));
@@ -123,7 +162,7 @@ fn mesh(src: &Surface, src_rect: Rect, f: &(dyn Fn(f64, f64) -> (f64, f64) + Syn
             tris.push([a, a + w1 + 1, a + w1]);
         }
     }
-    triangles(src, src_rect, &verts, &tris, interp, mips, ctl)
+    triangles(src, src_rect, &verts, &tris, interp, mips, clip, ctl)
 }
 
 /// Probe lines per axis [`mapped_lengths`] follows through the map.
@@ -168,7 +207,7 @@ fn mapped_lengths(src_rect: Rect, f: &(dyn Fn(f64, f64) -> (f64, f64) + Sync)) -
 /// interpolation of its source positions. Later triangles in `tris` draw over earlier ones (the
 /// order is the depth order). Output has `src`'s format with alpha added.
 pub fn warp_triangles(src: &Surface, src_rect: Rect, verts: &[([f64; 2], [f64; 2])], tris: &[[usize; 3]], interp: Interp) -> Surface {
-    triangles(src, src_rect, verts, tris, interp, true, &Interrupt::NONE)
+    triangles(src, src_rect, verts, tris, interp, true, None, &Interrupt::NONE)
 }
 
 /// Destination tiles one triangle render may keep bookkeeping for (a 1M-tile render is 69 Gpx).
@@ -176,10 +215,20 @@ const MAX_DST_TILES: u64 = 1 << 20;
 /// Source pixels one destination tile may read densely.
 const MAX_FOOTPRINT_PIXELS: u64 = 1 << 25;
 
-/// [`warp_triangles`], with the reduced-level sampling of strong shrinks switched by `mips`, and
-/// reporting progress per destination tile to `ctl`. A cancelled `ctl` skips the remaining tiles;
-/// the caller discards the result.
-fn triangles(src: &Surface, src_rect: Rect, verts: &[([f64; 2], [f64; 2])], tris: &[[usize; 3]], interp: Interp, mips: bool, ctl: &Interrupt) -> Surface {
+/// [`warp_triangles`], with the reduced-level sampling of strong shrinks switched by `mips`,
+/// rendered only inside `clip` when given, and reporting progress per destination tile to `ctl`.
+/// A cancelled `ctl` skips the remaining tiles; the caller discards the result.
+#[allow(clippy::too_many_arguments)]
+fn triangles(
+    src: &Surface,
+    src_rect: Rect,
+    verts: &[([f64; 2], [f64; 2])],
+    tris: &[[usize; 3]],
+    interp: Interp,
+    mips: bool,
+    clip: Option<Rect>,
+    ctl: &Interrupt,
+) -> Surface {
     let mut fmt = src.format();
     let converted;
     let src = if fmt.alpha {
@@ -205,6 +254,13 @@ fn triangles(src: &Surface, src_rect: Rect, verts: &[([f64; 2], [f64; 2])], tris
         y1 = y1.max(v.0[1]);
     }
     let dst = Rect::new(x0.max(-lim).floor() as i32 - 1, y0.max(-lim).floor() as i32 - 1, x1.min(lim).ceil() as i32 + 1, y1.min(lim).ceil() as i32 + 1);
+    let dst = match clip {
+        Some(c) => dst.intersect(&c),
+        None => dst,
+    };
+    if dst.is_empty() {
+        return out;
+    }
     // Bookkeeping is kept per destination tile, so a mesh flung across the whole coordinate range
     // would ask for millions of entries before drawing anything: draw nothing instead.
     let ts_px = photocraft_geom::TILE_SIZE as u64;
@@ -1061,6 +1117,22 @@ mod tests {
         assert!(worst < 0.02, "worst deviation from grey {worst}");
     }
 
+    #[test]
+    fn a_clipped_warp_equals_the_full_warp_inside_the_clip_and_is_empty_outside() {
+        let r = Rect::new(0, 0, 600, 400);
+        // Placed larger than the clip and bent, so it spills past it on every side.
+        let f = |x: f64, y: f64| (x * 1.7 - 300.0 + 0.1 * y, y * 1.5 - 120.0 + 40.0 * (x / 600.0 * std::f64::consts::PI).sin());
+        let clip = Rect::new(0, 0, 700, 450);
+        for depth in [SampleType::U8, SampleType::U16, SampleType::F32] {
+            let src = textured(600, 400, 5).convert(PixelFormat::new(ColorMode::Rgb, depth, true));
+            let full = warp_mesh_surface_mips(&src, r, &f, Interp::Bicubic, true);
+            let clipped = warp_mesh_surface_clipped(&src, r, &f, Interp::Bicubic, clip);
+            assert!(clip.contains_rect(&clipped.content_bounds()), "{depth:?}: {:?}", clipped.content_bounds());
+            assert!(!full.content_bounds().intersect(&clip).is_empty() && !clip.contains_rect(&full.content_bounds()), "{depth:?}");
+            let inside = full.content_bounds().intersect(&clip);
+            assert_eq!(clipped.read_region(inside), full.read_region(inside), "{depth:?}");
+        }
+    }
     #[test]
     fn an_anisotropic_shrink_is_not_blurred_along_its_short_axis() {
         // 16× narrower but full height: the exact path averages 16 columns and 1 row; a level

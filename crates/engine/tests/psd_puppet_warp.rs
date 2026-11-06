@@ -163,7 +163,11 @@ fn puppet_warp_goes_through_the_smart_filter_pipeline() {
         // At half opacity the warped result lies over the unwarped pixels at half strength.
         let half = cache(&s, id);
         assert!((half.pixel(60, 20)[3] - 0.5).abs() < 0.01, "depth {depth}: {:?}", half.pixel(60, 20));
-        assert_eq!(half.pixel(10, 20), placed.pixel(10, 20), "depth {depth}");
+        // A Normal smart filter at 50 % mixes its result with its input, coverage included (as
+        // Photoshop's smart filter blending does): where the warp moved the pixels away, half the
+        // original's coverage stays, in its colour.
+        let (h, p) = (half.pixel(10, 20), placed.pixel(10, 20));
+        assert!(h[..3] == p[..3] && (h[3] - 0.5 * p[3]).abs() < 0.01, "depth {depth}: {h:?} vs {p:?}");
         // Multiply: where the warped and unwarped blocks overlap, the product of the two.
         s.execute("layer.smartFilter.blendingOptions", json!({"layer": id.0, "index": 0, "blend": "multiply", "opacity": 100})).unwrap();
         let rgba = |v: Vec<f32>| [v[0], v[1], v[2], v[3]];

@@ -182,15 +182,16 @@ fn with_no_cache_budgets_one_replace_decodes_and_places_each_file_once() {
         .unwrap();
         (s, id)
     };
-    // The check made before the edit decodes the file; the re-render decodes it once more.
+    // The check made before the edit decodes the file into this command's scope; the re-render
+    // finds it there.
     let (mut s, id) = copied(0.0);
     let (p, d) = (placed(), decoded());
     replace_contents_bytes(&mut s, id, "d.png", png.clone()).unwrap();
-    assert_eq!((placed() - p, decoded() - d), (1, 2), "two copies at one place");
+    assert_eq!((placed() - p, decoded() - d), (1, 1), "two copies at one place");
     let (mut s, id) = copied(3.0);
     let (p, d) = (placed(), decoded());
     replace_contents_bytes(&mut s, id, "d.png", png.clone()).unwrap();
-    assert_eq!((placed() - p, decoded() - d), (2, 2), "two copies at two places");
+    assert_eq!((placed() - p, decoded() - d), (2, 1), "two copies at two places");
     let mut s = session(8);
     paint(&mut s);
     let id = LayerId(convert(&mut s));

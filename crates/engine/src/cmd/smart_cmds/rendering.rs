@@ -484,7 +484,9 @@ pub fn refresh_layer(doc: &Document, l: &mut Layer) -> Result<bool> {
 pub(super) fn unapplied_filters(sm: &SmartObject) -> Vec<String> {
     sm.smart_filters
         .iter()
+        // A Photoshop Puppet Warp or Liquify is drawn from the mesh Photoshop stored.
         .filter(|f| sm.filters_enabled && f.visible && crate::commands::find(&f.command).is_none())
+        .filter(|f| f.command != crate::distort_cmds::PSD_PUPPET && f.command != crate::distort_cmds::PSD_LIQUIFY)
         .map(|f| f.params.get("name").and_then(Value::as_str).unwrap_or(&f.command).to_string())
         .collect()
 }
